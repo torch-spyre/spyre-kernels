@@ -1,0 +1,42 @@
+{
+  "repo": "vllm-project/vllm",
+  "commit": "cde8d2471026",
+  "kernels": {
+    "rms_norm": {
+      "vllm_file": "vllm/model_executor/layers/batch_invariant.py",
+      "kernel_function": "_rms_norm_kernel"
+    },
+    "silu_and_mul": {
+      "vllm_file": "vllm/model_executor/layers/activation.py",
+      "kernel_function": "_swiglustep_and_mul_kernel"
+    },
+    "ranks": {
+      "vllm_file": "vllm/v1/worker/gpu/sample/logprob.py",
+      "kernel_function": "_ranks_kernel"
+    },
+    "log_softmax": {
+      "vllm_file": "vllm/v1/worker/gpu/sample/logprob.py",
+      "kernel_function": "_topk_log_softmax_kernel"
+    },
+    "decode_softmax_reducev": {
+      "vllm_file": "vllm/v1/attention/ops/triton_decode_attention.py",
+      "kernel_function": "_fwd_kernel_stage2"
+    },
+    "merge_attn_states": {
+      "vllm_file": "vllm/v1/attention/ops/triton_merge_attn_states.py",
+      "kernel_function": "merge_attn_states_kernel"
+    },
+    "mrope": {
+      "vllm_file": "vllm/model_executor/layers/rotary_embedding/mrope.py",
+      "kernel_function": "_triton_mrope_forward"
+    },
+    "prefill_attention": {
+      "vllm_file": "vllm/v1/attention/ops/triton_prefill_attention.py",
+      "kernel_function": "_fwd_kernel"
+    },
+    "reshape_and_cache": {
+      "vllm_file": "vllm/v1/attention/ops/triton_reshape_and_cache_flash.py",
+      "kernel_function": "reshape_and_cache_kernel_flash"
+    }
+  }
+}
