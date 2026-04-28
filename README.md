@@ -271,6 +271,8 @@ python bench/bench_your_kernel.py
 # bench/run_all.py auto-discovers bench_*.py files
 ```
 
-## Roadmap
+## Further Reading
 
 See [plan.md](plan.md) for project roadmap and next steps.
+
+See [status.md](status.md) for per-kernel conversion details and takeaways.
