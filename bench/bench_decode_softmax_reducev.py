@@ -2,10 +2,10 @@
 """Benchmark Decode Softmax+ReduceV Triton kernels."""
 
 import torch
-import triton.testing
 
-from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
+from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
 from kernels.decode_softmax_reducev.block_ptr import _fwd_kernel_stage2_block_ptr
+from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
 
 
 def _make_mid_o(batch, heads, num_kv_splits, Lv, seq_lens, device):
@@ -21,6 +21,8 @@ def bench_decode_softmax_reducev():
         print("CUDA not available, skipping benchmark")
         return
 
+    gpu_warmup()
+
     device = torch.device("cuda")
     Lv_values = [64, 128]
     batch_size = 4
@@ -28,19 +30,18 @@ def bench_decode_softmax_reducev():
     num_kv_splits = 4
 
     print("Decode Softmax+ReduceV Benchmark")
-    print("=" * 60)
-    print(f"{'Lv':<8} {'Raw (ms)':<12} {'BlockPtr (ms)':<14} {'Slowdown':<10}")
-    print("-" * 60)
+    print("=" * 80)
+    print(BENCH_HEADER)
+    print(BENCH_SEP)
 
     for Lv in Lv_values:
         seq_lens = torch.randint(num_kv_splits, 256, (batch_size,), device=device, dtype=torch.int32)
         mid_o = _make_mid_o(batch_size, heads, num_kv_splits, Lv, seq_lens, device)
 
-        ms_raw = triton.testing.do_bench(lambda: decode_softmax_reducev(mid_o.clone(), seq_lens, num_kv_splits))
-        ms_blk = triton.testing.do_bench(lambda: decode_softmax_reducev(mid_o.clone(), seq_lens, num_kv_splits, kernel_fn=_fwd_kernel_stage2_block_ptr))
+        ms_raw = stable_bench(lambda: decode_softmax_reducev(mid_o.clone(), seq_lens, num_kv_splits))
+        ms_blk = stable_bench(lambda: decode_softmax_reducev(mid_o.clone(), seq_lens, num_kv_splits, kernel_fn=_fwd_kernel_stage2_block_ptr))
 
-        slowdown = ms_blk / ms_raw
-        print(f"{Lv:<8} {ms_raw:<12.3f} {ms_blk:<14.3f} {slowdown:<10.2f}x")
+        print(format_result(Lv, ms_raw, ms_blk))
 
 
 if __name__ == "__main__":

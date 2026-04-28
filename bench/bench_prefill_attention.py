@@ -2,10 +2,10 @@
 """Benchmark Prefill Attention (SDPA) Triton kernels."""
 
 import torch
-import triton.testing
 
-from kernels.prefill_attention.wrapper import context_attention_fwd
+from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
 from kernels.prefill_attention.block_ptr import _fwd_kernel_block_ptr
+from kernels.prefill_attention.wrapper import context_attention_fwd
 
 
 def bench_prefill_attention():
@@ -14,6 +14,8 @@ def bench_prefill_attention():
         print("CUDA not available, skipping benchmark")
         return
 
+    gpu_warmup()
+
     device = torch.device("cuda")
     seq_lens_configs = [[16], [32], [64]]
     head_dim = 64
@@ -21,9 +23,9 @@ def bench_prefill_attention():
     num_kv_heads = 4
 
     print("Prefill Attention Benchmark")
-    print("=" * 60)
-    print(f"{'Seq Len':<12} {'Raw (ms)':<12} {'BlockPtr (ms)':<14} {'Slowdown':<10}")
-    print("-" * 60)
+    print("=" * 80)
+    print(BENCH_HEADER)
+    print(BENCH_SEP)
 
     for seq_lens in seq_lens_configs:
         torch.manual_seed(42)
@@ -38,11 +40,10 @@ def bench_prefill_attention():
             b_start_loc[i] = b_start_loc[i - 1] + seq_lens[i - 1]
         max_input_len = max(seq_lens)
 
-        ms_raw = triton.testing.do_bench(lambda: context_attention_fwd(q.clone(), k.clone(), v.clone(), torch.zeros_like(q), b_start_loc, b_seq_len, max_input_len, is_causal=True))
-        ms_blk = triton.testing.do_bench(lambda: context_attention_fwd(q.clone(), k.clone(), v.clone(), torch.zeros_like(q), b_start_loc, b_seq_len, max_input_len, is_causal=True, kernel_fn=_fwd_kernel_block_ptr))
+        ms_raw = stable_bench(lambda: context_attention_fwd(q.clone(), k.clone(), v.clone(), torch.zeros_like(q), b_start_loc, b_seq_len, max_input_len, is_causal=True))
+        ms_blk = stable_bench(lambda: context_attention_fwd(q.clone(), k.clone(), v.clone(), torch.zeros_like(q), b_start_loc, b_seq_len, max_input_len, is_causal=True, kernel_fn=_fwd_kernel_block_ptr))
 
-        slowdown = ms_blk / ms_raw
-        print(f"{str(seq_lens):<12} {ms_raw:<12.3f} {ms_blk:<14.3f} {slowdown:<10.2f}x")
+        print(format_result(str(seq_lens), ms_raw, ms_blk))
 
 
 if __name__ == "__main__":

@@ -14,19 +14,51 @@ Raw-pointer Triton → Block-pointer Triton → KTIR (MLIR dialect for Spyre)
 
 ## Kernel Inventory
 
-| # | Kernel | Component | Status |
-|---|--------|-----------|--------|
-| 1 | `rms_norm` | RMSNorm normalization | Converted |
-| 2 | `silu_and_mul` | SwiGLU activation | Converted |
-| 3 | `ranks` | Logprob ranks | Converted |
-| 4 | `log_softmax` | Top-K log-softmax | Converted |
-| 5 | `decode_softmax_reducev` | Decode attention merge | Converted |
-| 6 | `merge_attn_states` | Attention state merge | Converted |
-| 7 | `mrope` | Multi-RoPE embeddings | Converted |
-| 8 | `reshape_and_cache` | KV cache reshape | Converted |
-| 9 | `prefill_attention` | Prefill SDPA | Converted |
+| # | Kernel | Component |
+|---|--------|-----------|
+| 1 | `rms_norm` | RMSNorm normalization |
+| 2 | `silu_and_mul` | SwiGLU activation |
+| 3 | `ranks` | Logprob ranks |
+| 4 | `log_softmax` | Top-K log-softmax |
+| 5 | `decode_softmax_reducev` | Decode attention merge |
+| 6 | `merge_attn_states` | Attention state merge |
+| 7 | `mrope` | Multi-RoPE embeddings |
+| 8 | `reshape_and_cache` | KV cache reshape |
+| 9 | `prefill_attention` | Prefill SDPA |
 
 All kernels are extracted verbatim from vLLM commit [`cde8d2471026`](https://github.com/vllm-project/vllm/commit/cde8d2471026).
+
+## Project Structure
+
+```
+tritokti/
+├── kernels/                    # Kernel implementations
+│   ├── <name>/
+│   │   ├── original.py        # Raw-pointer Triton (from vLLM)
+│   │   ├── block_ptr.py       # Block-pointer Triton
+│   │   ├── wrapper.py         # Python launcher
+│   │   └── kernel.ktir.mlir   # KTIR output
+│
+├── external/
+│   └── ktir_cpu/              # KTIR CPU interpreter (cloned separately)
+│
+├── tests/
+│   ├── triton/                # GPU equivalence tests
+│   │   └── test_<name>.py
+│   └── ktir/                  # CPU validation tests
+│       └── test_<name>.py
+│
+├── bench/
+│   ├── utils.py               # Shared benchmarking utilities
+│   ├── bench_<name>.py        # Performance benchmarks
+│   └── run_all.py             # Run all benchmarks
+│
+├── scripts/
+│   └── fetch_originals.py     # Extract kernels from vLLM
+│
+├── ccc_results.md             # A100/H100 benchmark results
+└── kernels.json               # Kernel registry (vLLM source mapping)
+```
 
 ## Quick Start
 
@@ -34,7 +66,7 @@ All kernels are extracted verbatim from vLLM commit [`cde8d2471026`](https://git
 
 ```bash
 # Activate the virtual environment
-source .venv-office/bin/activate
+source .venv/bin/activate
 
 # Or create a new environment with uv
 uv venv
@@ -55,49 +87,49 @@ pytest tests/triton/test_rms_norm.py -v
 
 **CPU tests (KTIR validation):**
 ```bash
-# All KTIR tests (CPU only, requires ktir_cpu interpreter)
+# Clone the ktir_cpu interpreter into external/ (one-time setup)
+git clone https://github.com/torch-spyre/ktir-cpu external/ktir_cpu
+
+# Run from the ktir_cpu directory (its pyproject.toml provides the interpreter dependency)
 cd external/ktir_cpu
-uv run python ../tests/ktir/test_rms_norm.py
-uv run python ../tests/ktir/test_silu_and_mul.py
+uv run python ../../tests/ktir/test_rms_norm.py
+uv run python ../../tests/ktir/test_silu_and_mul.py
 # ... etc
 ```
 
 ### Running Benchmarks
 
 ```bash
-# All benchmarks
+# All benchmarks (uses stable_bench: 3-trial trimmed mean, median + [p20-p80] bands)
 python bench/run_all.py
+
+# With repeated trials for cross-run consistency checks
+python bench/run_all.py --trials 3
+
+# Lock GPU clocks for maximum stability (requires sudo)
+python bench/run_all.py --lock-clocks
 
 # Single benchmark
 python bench/bench_rms_norm.py
-python bench/bench_silu_and_mul.py
+
+# Control trial count via environment variable (default: 5)
+BENCH_TRIALS=3 python bench/bench_mrope.py
 ```
 
-## Project Structure
+Benchmarks use `bench/utils.py` for consistent methodology:
+- GPU warmup before measurements
+- `triton.testing.do_bench` with `warmup=100ms`, `rep=500ms`, `quantiles=[0.5, 0.2, 0.8]`
+- Multiple independent trials with trimmed mean (drop min/max)
+- Reports median + [p20-p80] percentile bands to show measurement noise
 
-```
-tritokti/
-├── kernels/                    # Kernel implementations
-│   ├── <name>/
-│   │   ├── original.py        # Raw-pointer Triton (from vLLM)
-│   │   ├── block_ptr.py       # Block-pointer Triton
-│   │   ├── wrapper.py         # Python launcher
-│   │   └── kernel.ktir.mlir   # KTIR output
-│
-├── tests/
-│   ├── triton/                # GPU equivalence tests
-│   │   └── test_<name>.py
-│   └── ktir/                  # CPU validation tests
-│       └── test_<name>.py
-│
-├── bench/
-│   ├── bench_<name>.py        # Performance benchmarks
-│   └── run_all.py             # Run all benchmarks
-│
-├── scripts/
-│   └── fetch_originals.py     # Extract kernels from vLLM
-│
-└── kernels.json               # Kernel registry (vLLM source mapping)
+See [ccc_results.md](ccc_results.md) for A100/H100 benchmark results.
+
+## Verification
+
+Check kernel sync with vLLM:
+
+```bash
+python scripts/fetch_originals.py --diff
 ```
 
 ## Adding a New Kernel
@@ -202,14 +234,26 @@ Create `bench/bench_your_kernel.py`:
 
 ```python
 import torch
-import triton.testing
+from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
 from kernels.your_kernel.wrapper import your_kernel
+from kernels.your_kernel.block_ptr import _your_kernel_block_ptr
 
 def bench_your_kernel():
+    if not torch.cuda.is_available():
+        print("CUDA not available, skipping benchmark")
+        return
+
+    gpu_warmup()
+
+    print("Your Kernel Benchmark")
+    print("=" * 80)
+    print(BENCH_HEADER)
+    print(BENCH_SEP)
+
     x = torch.randn(...)
-    ms_raw = triton.testing.do_bench(lambda: your_kernel(x))
-    ms_blk = triton.testing.do_bench(lambda: your_kernel(x, kernel_fn=...))
-    print(f"Slowdown: {ms_blk/ms_raw:.2f}x")
+    ms_raw = stable_bench(lambda: your_kernel(x))
+    ms_blk = stable_bench(lambda: your_kernel(x, kernel_fn=_your_kernel_block_ptr))
+    print(format_result("config", ms_raw, ms_blk))
 ```
 
 ### 7. Run Validation
@@ -224,17 +268,3 @@ python bench/bench_your_kernel.py
 # Add to benchmark suite
 # bench/run_all.py auto-discovers bench_*.py files
 ```
-
-## Verification
-
-Check kernel sync with vLLM:
-
-```bash
-python scripts/fetch_originals.py --diff
-```
-
-## Resources
-
-- [Experiment Design](status.md) - Detailed conversion status and methodology
-- [Status Report](status.md) - Per-kernel conversion details
-- [Project Plan](plan.md) - Roadmap and milestones

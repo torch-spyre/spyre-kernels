@@ -2,10 +2,10 @@
 """Benchmark MRoPE Triton kernels."""
 
 import torch
-import triton.testing
 
-from kernels.mrope.wrapper import triton_mrope
+from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
 from kernels.mrope.block_ptr import _triton_mrope_forward_block_ptr
+from kernels.mrope.wrapper import triton_mrope
 
 
 def bench_mrope():
@@ -14,6 +14,8 @@ def bench_mrope():
         print("CUDA not available, skipping benchmark")
         return
 
+    gpu_warmup()
+
     device = torch.device("cuda")
     head_sizes = [64, 128]
     num_tokens = 16
@@ -21,9 +23,9 @@ def bench_mrope():
     num_kv_heads = 4
 
     print("MRoPE Benchmark")
-    print("=" * 60)
-    print(f"{'Head Size':<12} {'Raw (ms)':<12} {'BlockPtr (ms)':<14} {'Slowdown':<10}")
-    print("-" * 60)
+    print("=" * 80)
+    print(BENCH_HEADER)
+    print(BENCH_SEP)
 
     for head_size in head_sizes:
         torch.manual_seed(42)
@@ -38,11 +40,10 @@ def bench_mrope():
         mrope_section = [t, h, w]
         rotary_dim = head_size
 
-        ms_raw = triton.testing.do_bench(lambda: triton_mrope(q.clone(), k.clone(), cos, sin, mrope_section, head_size, rotary_dim, False))
-        ms_blk = triton.testing.do_bench(lambda: triton_mrope(q.clone(), k.clone(), cos, sin, mrope_section, head_size, rotary_dim, False, kernel_fn=_triton_mrope_forward_block_ptr))
+        ms_raw = stable_bench(lambda: triton_mrope(q.clone(), k.clone(), cos, sin, mrope_section, head_size, rotary_dim, False))
+        ms_blk = stable_bench(lambda: triton_mrope(q.clone(), k.clone(), cos, sin, mrope_section, head_size, rotary_dim, False, kernel_fn=_triton_mrope_forward_block_ptr))
 
-        slowdown = ms_blk / ms_raw
-        print(f"{head_size:<12} {ms_raw:<12.3f} {ms_blk:<14.3f} {slowdown:<10.2f}x")
+        print(format_result(head_size, ms_raw, ms_blk))
 
 
 if __name__ == "__main__":

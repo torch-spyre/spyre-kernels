@@ -2,7 +2,7 @@
 name = "tritokti"
 version = "0.1.0"
 description = "Triton-to-KTIR kernel porting for vLLM on IBM Spyre"
-readme = "experiment-design.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.2.6",

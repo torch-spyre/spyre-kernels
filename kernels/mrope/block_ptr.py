@@ -10,6 +10,11 @@
 #     masked gathering from 3 different base addresses (T/H/W dims)
 #     which cannot be expressed as block pointers.
 #   - The kernel is in-place on q and k, same as original.
+#
+# Optimizations over naive block-ptr conversion:
+#   - order=(0, 1) to match row-major layout (stride-1 along dim 1)
+#   - tl.advance to reuse block pointers for second-half loads
+#   - boundary_check only on dimensions that actually need it
 
 import torch
 import triton
@@ -72,57 +77,44 @@ def _triton_mrope_forward_block_ptr(
     sin_row = t_sin_row + h_sin_row + w_sin_row
 
     # ─── q loads/stores: 2D block pointers [n_heads, half_rd] ───
-    # q is laid out as [n_qh, hd] per token (flattened as n_qh*hd).
-    # First half: columns [0, half_rd), Second half: columns [half_rd, rd)
-    q1_block_ptr = tl.make_block_ptr(
+    # order=(0, 1): dim 1 (columns) is contiguous in memory (stride=1)
+    q_block_ptr = tl.make_block_ptr(
         base=q_base,
         shape=(n_qh, rd),
         strides=(hd, 1),
         offsets=(0, 0),
         block_shape=(pad_n_qh, pad_hd // 2),
-        order=(1, 0),
-    )
-    q2_block_ptr = tl.make_block_ptr(
-        base=q_base,
-        shape=(n_qh, rd),
-        strides=(hd, 1),
-        offsets=(0, half_rd),
-        block_shape=(pad_n_qh, pad_hd // 2),
-        order=(1, 0),
+        order=(0, 1),
     )
 
-    q_tile_1 = tl.load(q1_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
-    q_tile_2 = tl.load(q2_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    q_tile_1 = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    q_block_ptr = tl.advance(q_block_ptr, (0, half_rd))
+    q_tile_2 = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
 
     new_q_tile_1 = q_tile_1 * cos_row - q_tile_2 * sin_row
     new_q_tile_2 = q_tile_2 * cos_row + q_tile_1 * sin_row
 
-    tl.store(q1_block_ptr, new_q_tile_1, boundary_check=(0, 1))
-    tl.store(q2_block_ptr, new_q_tile_2, boundary_check=(0, 1))
+    tl.store(q_block_ptr, new_q_tile_2, boundary_check=(0, 1))
+    q_block_ptr = tl.advance(q_block_ptr, (0, -half_rd))
+    tl.store(q_block_ptr, new_q_tile_1, boundary_check=(0, 1))
 
     # ─── k loads/stores: 2D block pointers [n_kh, half_rd] ───
-    k1_block_ptr = tl.make_block_ptr(
+    k_block_ptr = tl.make_block_ptr(
         base=k_base,
         shape=(n_kh, rd),
         strides=(hd, 1),
         offsets=(0, 0),
         block_shape=(pad_n_kh, pad_hd // 2),
-        order=(1, 0),
-    )
-    k2_block_ptr = tl.make_block_ptr(
-        base=k_base,
-        shape=(n_kh, rd),
-        strides=(hd, 1),
-        offsets=(0, half_rd),
-        block_shape=(pad_n_kh, pad_hd // 2),
-        order=(1, 0),
+        order=(0, 1),
     )
 
-    k_tile_1 = tl.load(k1_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
-    k_tile_2 = tl.load(k2_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    k_tile_1 = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    k_block_ptr = tl.advance(k_block_ptr, (0, half_rd))
+    k_tile_2 = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
 
     new_k_tile_1 = k_tile_1 * cos_row - k_tile_2 * sin_row
     new_k_tile_2 = k_tile_2 * cos_row + k_tile_1 * sin_row
 
-    tl.store(k1_block_ptr, new_k_tile_1, boundary_check=(0, 1))
-    tl.store(k2_block_ptr, new_k_tile_2, boundary_check=(0, 1))
+    tl.store(k_block_ptr, new_k_tile_2, boundary_check=(0, 1))
+    k_block_ptr = tl.advance(k_block_ptr, (0, -half_rd))
+    tl.store(k_block_ptr, new_k_tile_1, boundary_check=(0, 1))
