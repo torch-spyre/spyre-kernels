@@ -76,7 +76,7 @@ uv pip install -e .[test]
 
 ### Running Tests
 
-**GPU tests (Triton kernel equivalence):**
+**GPU tests** verify that block-pointer kernels produce numerically identical results to the original raw-pointer vLLM kernels:
 ```bash
 # All Triton tests (requires GPU)
 pytest tests/triton/ -v
@@ -85,7 +85,7 @@ pytest tests/triton/ -v
 pytest tests/triton/test_rms_norm.py -v
 ```
 
-**CPU tests (KTIR validation):**
+**CPU tests** validate KTIR output against NumPy reference implementations using the `ktir_cpu` interpreter:
 ```bash
 # Clone the ktir_cpu interpreter into external/ (one-time setup)
 git clone https://github.com/torch-spyre/ktir-cpu external/ktir_cpu
@@ -98,6 +98,8 @@ uv run python ../../tests/ktir/test_silu_and_mul.py
 ```
 
 ### Running Benchmarks
+
+Benchmarks measure the GPU latency overhead of block-pointer conversion by comparing original vs. block-pointer kernels side-by-side:
 
 ```bash
 # All benchmarks (uses stable_bench: 3-trial trimmed mean, median + [p20-p80] bands)
@@ -268,3 +270,7 @@ python bench/bench_your_kernel.py
 # Add to benchmark suite
 # bench/run_all.py auto-discovers bench_*.py files
 ```
+
+## Roadmap
+
+See [plan.md](plan.md) for project roadmap and next steps.
