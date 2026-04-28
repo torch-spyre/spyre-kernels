@@ -1,14 +1,14 @@
-"""Validate KV Cache Reshape KTDP MLIR against NumPy reference."""
+"""Validate KV Cache Reshape KTDP MLIR against vLLM kernel."""
 
-import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
 from ktir_cpu import KTIRInterpreter
+from kernels.reshape_and_cache.wrapper import reshape_and_cache
 
-MLIR_PATH = str(Path(__file__).resolve().parent / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "reshape_and_cache" / "kernel.ktir.mlir")
 
 NUM_TOKENS = 32
 NUM_HEADS = 8
@@ -19,26 +19,36 @@ NUM_BLOCKS = 4
 CACHE_SLOTS = NUM_BLOCKS * BLOCK_SIZE  # 64
 
 
-def reshape_and_cache_ref(
-    key: np.ndarray,
-    value: np.ndarray,
-    slot_mapping: np.ndarray,
-) -> tuple:
-    """NumPy reference: copy key/value rows to cache slots.
+def vllm_reference(
+    key_flat: np.ndarray,
+    value_flat: np.ndarray,
+    slot_mapping_f16: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run vLLM reshape_and_cache kernel on GPU.
 
-    key, value: [32, 512]
-    slot_mapping: [32] with int values in [0, 64)
-    Returns: key_cache[64, 512], value_cache[64, 512]
+    KTIR layout: key/value [T, H*D], caches [slots, H*D], slot_mapping [T] f16
+    Wrapper layout: key/value [T, H, D], caches [num_blocks, block_size, H, D], slot_mapping [T] int64
+    Returns: key_cache, value_cache as [slots, H*D] (KTIR layout)
     """
-    key_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)
-    value_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)
+    key = torch.from_numpy(
+        key_flat.reshape(NUM_TOKENS, NUM_HEADS, HEAD_DIM).astype(np.float16)
+    ).cuda()
+    value = torch.from_numpy(
+        value_flat.reshape(NUM_TOKENS, NUM_HEADS, HEAD_DIM).astype(np.float16)
+    ).cuda()
+    key_cache = torch.zeros(
+        NUM_BLOCKS, BLOCK_SIZE, NUM_HEADS, HEAD_DIM, device="cuda", dtype=torch.float16
+    )
+    value_cache = torch.zeros(
+        NUM_BLOCKS, BLOCK_SIZE, NUM_HEADS, HEAD_DIM, device="cuda", dtype=torch.float16
+    )
+    slot_mapping = torch.from_numpy(slot_mapping_f16.astype(np.int64)).cuda()
 
-    for t in range(NUM_TOKENS):
-        slot = int(slot_mapping[t])
-        key_cache[slot] = key[t]
-        value_cache[slot] = value[t]
+    reshape_and_cache(key, value, key_cache, value_cache, slot_mapping)
 
-    return key_cache, value_cache
+    kc = key_cache.reshape(CACHE_SLOTS, FLAT_DIM).cpu().numpy()
+    vc = value_cache.reshape(CACHE_SLOTS, FLAT_DIM).cpu().numpy()
+    return kc, vc
 
 
 def test_reshape_and_cache_ktir():
@@ -65,7 +75,7 @@ def test_reshape_and_cache_ktir():
     result_kc = outputs["key_cache"]
     result_vc = outputs["value_cache"]
 
-    expected_kc, expected_vc = reshape_and_cache_ref(key, value, slot_mapping)
+    expected_kc, expected_vc = vllm_reference(key, value, slot_mapping)
 
     np.testing.assert_allclose(
         result_kc.astype(np.float32), expected_kc.astype(np.float32),
@@ -108,7 +118,3 @@ def test_reshape_sequential_slots():
     print("PASS: sequential slot mapping")
 
 
-if __name__ == "__main__":
-    test_reshape_and_cache_ktir()
-    test_reshape_sequential_slots()
-    print("\nAll KV Cache Reshape KTIR validation tests passed!")

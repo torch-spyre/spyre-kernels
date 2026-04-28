@@ -1,14 +1,14 @@
-"""Validate Decode softmax+reduceV KTDP MLIR against NumPy reference."""
+"""Validate Decode softmax+reduceV KTDP MLIR against vLLM kernel."""
 
-import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
 from ktir_cpu import KTIRInterpreter
+from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
 
-MLIR_PATH = str(Path(__file__).resolve().parent / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "decode_softmax_reducev" / "kernel.ktir.mlir")
 
 NUM_BATCHES = 4
 NUM_HEADS = 8
@@ -16,39 +16,19 @@ NUM_SPLITS = 4
 LV = 64
 
 
-def decode_softmax_reducev_ref(mid_o: np.ndarray) -> tuple:
-    """NumPy reference for online softmax merge across KV splits.
+def vllm_reference(mid_o_flat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Run vLLM decode stage2 kernel on GPU.
 
-    mid_o: [128, 65] — for each (batch, head), 4 rows of [V(64) | logit(1)]
-    Returns: output [32, 64], lse [32]
+    mid_o_flat: [B*H*S, Lv+1] (KTIR layout)
+    Returns: output [B*H, Lv] f16, lse [B*H] f16
     """
-    total_pairs = NUM_BATCHES * NUM_HEADS
-    output = np.zeros((total_pairs, LV), dtype=np.float32)
-    lse = np.zeros(total_pairs, dtype=np.float32)
-
-    for pair_id in range(total_pairs):
-        base_row = pair_id * NUM_SPLITS
-        e_max = -np.inf
-        e_sum = 0.0
-        acc = np.zeros(LV, dtype=np.float32)
-
-        for split in range(NUM_SPLITS):
-            row = base_row + split
-            v = mid_o[row, :LV].astype(np.float32)
-            tlogic = float(mid_o[row, LV])
-
-            n_e_max = max(tlogic, e_max)
-            old_scale = np.exp(e_max - n_e_max)
-            acc *= old_scale
-            exp_logic = np.exp(tlogic - n_e_max)
-            acc += exp_logic * v
-            e_sum = e_sum * old_scale + exp_logic
-            e_max = n_e_max
-
-        output[pair_id] = acc / e_sum
-        lse[pair_id] = e_max + np.log(e_sum)
-
-    return output.astype(np.float16), lse.astype(np.float16)
+    mid_o_4d = mid_o_flat.reshape(NUM_BATCHES, NUM_HEADS, NUM_SPLITS, LV + 1)
+    mid_o = torch.from_numpy(mid_o_4d.astype(np.float16)).cuda()
+    b_seq_len = torch.full((NUM_BATCHES,), NUM_SPLITS * 64, device="cuda", dtype=torch.int32)
+    o, lse = decode_softmax_reducev(mid_o, b_seq_len, NUM_SPLITS)
+    o_flat = o.reshape(NUM_BATCHES * NUM_HEADS, LV).cpu().numpy().astype(np.float16)
+    lse_flat = lse.reshape(NUM_BATCHES * NUM_HEADS).cpu().numpy().astype(np.float16)
+    return o_flat, lse_flat
 
 
 def test_decode_softmax_reducev_ktir():
@@ -70,7 +50,7 @@ def test_decode_softmax_reducev_ktir():
     result_out = outputs["output"]
     result_lse = outputs["lse_out"]
 
-    expected_out, expected_lse = decode_softmax_reducev_ref(mid_o)
+    expected_out, expected_lse = vllm_reference(mid_o)
 
     np.testing.assert_allclose(
         result_out.astype(np.float32), expected_out.astype(np.float32),
@@ -88,7 +68,7 @@ def test_decode_softmax_reducev_ktir():
 
 
 def test_decode_softmax_uniform():
-    """All logits equal → uniform attention → output = mean(V), lse = logit + log(splits)."""
+    """All logits equal -> uniform attention -> output = mean(V), lse = logit + log(splits)."""
     interp = KTIRInterpreter()
     interp.load(MLIR_PATH)
 
@@ -99,7 +79,7 @@ def test_decode_softmax_uniform():
         base = pair_id * NUM_SPLITS
         for s in range(NUM_SPLITS):
             mid_o[base + s, :LV] = rng.standard_normal(LV).astype(np.float16)
-            mid_o[base + s, LV] = np.float16(1.0)  # all logits = 1.0
+            mid_o[base + s, LV] = np.float16(1.0)
 
     output = np.zeros((NUM_BATCHES * NUM_HEADS, LV), dtype=np.float16)
     lse_out = np.zeros(NUM_BATCHES * NUM_HEADS, dtype=np.float16)
@@ -113,7 +93,7 @@ def test_decode_softmax_uniform():
     )
     result_out = outputs["output"]
     result_lse = outputs["lse_out"]
-    expected_out, expected_lse = decode_softmax_reducev_ref(mid_o)
+    expected_out, expected_lse = vllm_reference(mid_o)
 
     np.testing.assert_allclose(
         result_out.astype(np.float32), expected_out.astype(np.float32),
@@ -122,7 +102,3 @@ def test_decode_softmax_uniform():
     print("PASS: uniform logits")
 
 
-if __name__ == "__main__":
-    test_decode_softmax_reducev_ktir()
-    test_decode_softmax_uniform()
-    print("\nAll Decode softmax+reduceV KTIR validation tests passed!")

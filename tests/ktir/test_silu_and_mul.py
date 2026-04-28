@@ -1,29 +1,24 @@
-"""Validate SwiGLU KTDP MLIR against NumPy reference using ktir_cpu interpreter."""
+"""Validate SwiGLU KTDP MLIR against vLLM kernel using ktir_cpu interpreter."""
 
-import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
 from ktir_cpu import KTIRInterpreter
+from kernels.silu_and_mul.wrapper import silu_and_mul
 
-MLIR_PATH = str(Path(__file__).resolve().parent / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "silu_and_mul" / "kernel.ktir.mlir")
 
 NUM_ROWS = 32
 D = 1024
 
 
-def silu_and_mul_ref(x: np.ndarray, limit: float = 7.0) -> np.ndarray:
-    """NumPy reference: output = clamp(silu(gate)) * clamp(up), where x = [gate || up]."""
-    d = x.shape[1] // 2
-    gate = x[:, :d].astype(np.float32)
-    up = x[:, d:].astype(np.float32)
-    sigmoid_gate = 1.0 / (1.0 + np.exp(-gate))
-    silu_gate = sigmoid_gate * gate
-    gate_clamped = np.minimum(silu_gate, limit)
-    up_clamped = np.clip(up, -limit, limit)
-    return (gate_clamped * up_clamped).astype(np.float16)
+def vllm_reference(x_np: np.ndarray) -> np.ndarray:
+    """Run vLLM SwiGLU kernel on GPU and return result as numpy."""
+    x = torch.from_numpy(x_np.astype(np.float16)).cuda()
+    out = silu_and_mul(x)
+    return out.cpu().numpy()
 
 
 def test_silu_and_mul_ktir():
@@ -36,7 +31,7 @@ def test_silu_and_mul_ktir():
 
     outputs = interp.execute_function("silu_and_mul_kernel", X=X, Y=Y, d=D)
     result = outputs["Y"]
-    expected = silu_and_mul_ref(X)
+    expected = vllm_reference(X)
 
     np.testing.assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
     max_err = np.max(np.abs(result.astype(np.float32) - expected.astype(np.float32)))
@@ -56,7 +51,3 @@ def test_silu_and_mul_zeros():
     print("PASS: zeros input")
 
 
-if __name__ == "__main__":
-    test_silu_and_mul_ktir()
-    test_silu_and_mul_zeros()
-    print("\nAll SwiGLU KTIR validation tests passed!")

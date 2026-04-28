@@ -78,23 +78,28 @@ uv pip install -e .[test]
 
 **GPU tests** verify that block-pointer kernels produce numerically identical results to the original raw-pointer vLLM kernels:
 ```bash
-# All Triton tests (requires GPU)
+# All GPU equivalence tests (requires GPU)
 pytest tests/triton/ -v
 
 # Single kernel test
 pytest tests/triton/test_rms_norm.py -v
 ```
 
-**CPU tests** validate KTIR output against NumPy reference implementations using the `ktir_cpu` interpreter:
+**KTIR tests** validate KTIR output against the original vLLM kernels using the `ktir_cpu` interpreter:
 ```bash
 # Clone the ktir_cpu interpreter into external/ (one-time setup)
 git clone https://github.com/torch-spyre/ktir-cpu external/ktir_cpu
 
-# Run from the ktir_cpu directory (its pyproject.toml provides the interpreter dependency)
-cd external/ktir_cpu
-uv run python ../../tests/ktir/test_rms_norm.py
-uv run python ../../tests/ktir/test_silu_and_mul.py
-# ... etc
+# All KTIR tests (requires GPU + ktir_cpu)
+pytest tests/ktir/ -v
+
+# Single kernel test
+pytest tests/ktir/test_rms_norm.py -v
+```
+
+**All tests** at once:
+```bash
+pytest tests/ -v
 ```
 
 ### Running Benchmarks
@@ -222,12 +227,20 @@ def test_numerical_equivalence(device):
 **KTIR test** (`tests/ktir/test_your_kernel.py`):
 ```python
 import numpy as np
+import torch
 from ktir_cpu import KTIRInterpreter
+from kernels.your_kernel.wrapper import your_kernel
+
+def vllm_reference(x_np):
+    """Run vLLM kernel on GPU and return result as numpy."""
+    x = torch.from_numpy(x_np).cuda()
+    out = your_kernel(x)
+    return out.cpu().numpy()
 
 def test_your_kernel_ktir():
     interp = KTIRInterpreter()
     interp.load("kernels/your_kernel/kernel.ktir.mlir")
-    # ... execute and compare to NumPy reference ...
+    # ... execute and compare to vLLM reference ...
 ```
 
 ### 6. Add Benchmark

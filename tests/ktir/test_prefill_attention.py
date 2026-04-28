@@ -1,14 +1,14 @@
-"""Validate Prefill Attention (SDPA) KTDP MLIR against NumPy reference."""
+"""Validate Prefill Attention (SDPA) KTDP MLIR against vLLM kernel."""
 
-import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
 from ktir_cpu import KTIRInterpreter
+from kernels.prefill_attention.wrapper import context_attention_fwd
 
-MLIR_PATH = str(Path(__file__).resolve().parent / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "prefill_attention" / "kernel.ktir.mlir")
 
 SEQ_LEN = 16
 NUM_HEADS = 4
@@ -17,38 +17,35 @@ FLAT_DIM = NUM_HEADS * HEAD_DIM
 SCALE = 1.0 / np.sqrt(HEAD_DIM)
 
 
-def sdpa_ref(q: np.ndarray, k: np.ndarray, v: np.ndarray, is_causal: bool = True) -> np.ndarray:
-    """NumPy reference for multi-head SDPA.
+def vllm_reference(
+    q_flat: np.ndarray, k_flat: np.ndarray, v_flat: np.ndarray,
+    is_causal: bool = True,
+) -> np.ndarray:
+    """Run vLLM prefill attention kernel on GPU.
 
-    q, k, v: [16, 256]  (seq_len x num_heads*head_dim)
-    Returns: output [16, 256]
+    KTIR layout: q, k, v [T, H*D]
+    Wrapper layout: q, k, v [T, H, D]
+    Returns: output [T, H*D] (KTIR layout)
     """
-    output = np.zeros_like(q, dtype=np.float32)
-    for h in range(NUM_HEADS):
-        col = h * HEAD_DIM
-        qh = q[:, col:col + HEAD_DIM].astype(np.float32)
-        kh = k[:, col:col + HEAD_DIM].astype(np.float32)
-        vh = v[:, col:col + HEAD_DIM].astype(np.float32)
+    q = torch.from_numpy(q_flat.reshape(SEQ_LEN, NUM_HEADS, HEAD_DIM).astype(np.float16)).cuda()
+    k = torch.from_numpy(k_flat.reshape(SEQ_LEN, NUM_HEADS, HEAD_DIM).astype(np.float16)).cuda()
+    v = torch.from_numpy(v_flat.reshape(SEQ_LEN, NUM_HEADS, HEAD_DIM).astype(np.float16)).cuda()
+    o = torch.zeros_like(q)
 
-        scores = qh @ kh.T * SCALE
-        if is_causal:
-            causal_mask = np.triu(np.full((SEQ_LEN, SEQ_LEN), -10000.0), k=1)
-            scores = scores + causal_mask
-        scores_max = np.max(scores, axis=1, keepdims=True)
-        exp_scores = np.exp(scores - scores_max)
-        weights = exp_scores / np.sum(exp_scores, axis=1, keepdims=True)
-        output[:, col:col + HEAD_DIM] = weights @ vh
+    b_start_loc = torch.tensor([0], device="cuda", dtype=torch.int32)
+    b_seq_len = torch.tensor([SEQ_LEN], device="cuda", dtype=torch.int32)
 
-    return output.astype(np.float16)
+    context_attention_fwd(q, k, v, o, b_start_loc, b_seq_len, SEQ_LEN, is_causal=is_causal)
+    return o.reshape(SEQ_LEN, FLAT_DIM).cpu().numpy().astype(np.float16)
 
 
 def _make_causal_mask(seq_len):
-    """Create causal mask: 0 on lower triangle (including diagonal), -1e8 on upper."""
+    """Create causal mask: 0 on lower triangle (including diagonal), -1e4 on upper."""
     mask = np.zeros((seq_len, seq_len), dtype=np.float16)
     for i in range(seq_len):
         for j in range(seq_len):
             if j > i:
-                mask[i, j] = np.float16(-10000.0)  # -1e4 fits in f16 range
+                mask[i, j] = np.float16(-10000.0)
     return mask
 
 
@@ -73,7 +70,7 @@ def test_prefill_attention_ktir():
         num_heads=NUM_HEADS,
     )
     result = outputs["output_ptr"]
-    expected = sdpa_ref(q, k, v, is_causal=True)
+    expected = vllm_reference(q, k, v, is_causal=True)
 
     np.testing.assert_allclose(
         result.astype(np.float32), expected.astype(np.float32),
@@ -84,7 +81,7 @@ def test_prefill_attention_ktir():
 
 
 def test_prefill_attention_uniform():
-    """Uniform Q,K with causal mask → row i attends to positions 0..i."""
+    """Uniform Q,K with causal mask -> row i attends to positions 0..i."""
     interp = KTIRInterpreter()
     interp.load(MLIR_PATH)
 
@@ -105,7 +102,7 @@ def test_prefill_attention_uniform():
         num_heads=NUM_HEADS,
     )
     result = outputs["output_ptr"]
-    expected = sdpa_ref(q, k, v, is_causal=True)
+    expected = vllm_reference(q, k, v, is_causal=True)
 
     np.testing.assert_allclose(
         result.astype(np.float32), expected.astype(np.float32),
@@ -114,7 +111,3 @@ def test_prefill_attention_uniform():
     print("PASS: uniform Q,K with causal mask")
 
 
-if __name__ == "__main__":
-    test_prefill_attention_ktir()
-    test_prefill_attention_uniform()
-    print("\nAll Prefill Attention KTIR validation tests passed!")

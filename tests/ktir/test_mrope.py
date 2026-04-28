@@ -1,14 +1,14 @@
-"""Validate MRoPE KTDP MLIR against NumPy reference."""
+"""Validate MRoPE KTDP MLIR against vLLM kernel."""
 
-import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
 from ktir_cpu import KTIRInterpreter
+from kernels.mrope.wrapper import triton_mrope
 
-MLIR_PATH = str(Path(__file__).resolve().parent / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "mrope" / "kernel.ktir.mlir")
 
 NUM_TOKENS = 32
 NUM_HEADS = 8
@@ -16,33 +16,37 @@ HEAD_DIM = 64
 HALF_DIM = HEAD_DIM // 2
 
 
-def mrope_ref(q: np.ndarray, k: np.ndarray, cos: np.ndarray, sin: np.ndarray) -> tuple:
-    """NumPy reference for rotary embedding on Q and K.
+def vllm_reference(
+    q_flat: np.ndarray, k_flat: np.ndarray,
+    cos_2d: np.ndarray, sin_2d: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Run vLLM MRoPE kernel on GPU.
 
-    q, k: [32, 512]  (num_tokens x num_heads*head_dim)
-    cos, sin: [32, 32]  (num_tokens x head_dim/2)
-    Returns: (q_result, k_result) with rotary embedding applied.
+    KTIR layout: q, k [T, H*D], cos/sin [T, half_dim] (pre-merged)
+    Wrapper layout: q, k [T, H*D], cos/sin [3, T, half_dim] (3 sections)
+
+    We use mrope_section=[half_dim, 0, 0] so the t-section covers everything,
+    making the vLLM kernel equivalent to the KTIR simplified version.
     """
-    q_result = q.copy().astype(np.float32)
-    k_result = k.copy().astype(np.float32)
-    cos_f32 = cos.astype(np.float32)
-    sin_f32 = sin.astype(np.float32)
+    q = torch.from_numpy(q_flat.copy().astype(np.float16)).cuda()
+    k = torch.from_numpy(k_flat.copy().astype(np.float16)).cuda()
 
-    for t in range(NUM_TOKENS):
-        for h in range(NUM_HEADS):
-            col = h * HEAD_DIM
-            # Q
-            x1 = q_result[t, col:col + HALF_DIM].copy()
-            x2 = q_result[t, col + HALF_DIM:col + HEAD_DIM].copy()
-            q_result[t, col:col + HALF_DIM] = x1 * cos_f32[t] - x2 * sin_f32[t]
-            q_result[t, col + HALF_DIM:col + HEAD_DIM] = x2 * cos_f32[t] + x1 * sin_f32[t]
-            # K
-            k1 = k_result[t, col:col + HALF_DIM].copy()
-            k2 = k_result[t, col + HALF_DIM:col + HEAD_DIM].copy()
-            k_result[t, col:col + HALF_DIM] = k1 * cos_f32[t] - k2 * sin_f32[t]
-            k_result[t, col + HALF_DIM:col + HEAD_DIM] = k2 * cos_f32[t] + k1 * sin_f32[t]
+    cos_3d = np.zeros((3, NUM_TOKENS, HALF_DIM), dtype=np.float16)
+    sin_3d = np.zeros((3, NUM_TOKENS, HALF_DIM), dtype=np.float16)
+    cos_3d[0] = cos_2d
+    sin_3d[0] = sin_2d
 
-    return q_result.astype(np.float16), k_result.astype(np.float16)
+    cos = torch.from_numpy(cos_3d).cuda().reshape(3 * NUM_TOKENS, HALF_DIM)
+    sin = torch.from_numpy(sin_3d).cuda().reshape(3 * NUM_TOKENS, HALF_DIM)
+
+    q_out, k_out = triton_mrope(
+        q, k, cos, sin,
+        mrope_section=[HALF_DIM, 0, 0],
+        head_size=HEAD_DIM,
+        rotary_dim=HEAD_DIM,
+        mrope_interleaved=False,
+    )
+    return q_out.cpu().numpy(), k_out.cpu().numpy()
 
 
 def test_mrope_ktir():
@@ -66,7 +70,7 @@ def test_mrope_ktir():
     )
     result_q = outputs["q"]
     result_k = outputs["k"]
-    expected_q, expected_k = mrope_ref(q, k, cos, sin)
+    expected_q, expected_k = vllm_reference(q, k, cos, sin)
 
     np.testing.assert_allclose(
         result_q.astype(np.float32), expected_q.astype(np.float32),
@@ -82,7 +86,7 @@ def test_mrope_ktir():
 
 
 def test_mrope_identity():
-    """cos=1, sin=0 → output should equal input."""
+    """cos=1, sin=0 -> output should equal input."""
     interp = KTIRInterpreter()
     interp.load(MLIR_PATH)
 
@@ -113,7 +117,3 @@ def test_mrope_identity():
     print("PASS: identity (cos=1, sin=0)")
 
 
-if __name__ == "__main__":
-    test_mrope_ktir()
-    test_mrope_identity()
-    print("\nAll MRoPE KTIR validation tests passed!")
