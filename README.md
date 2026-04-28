@@ -4,7 +4,7 @@ Triton-to-KTIR kernel porting for vLLM on IBM Spyre/AIU accelerators.
 
 ## Overview
 
-This project ports Triton kernels from vLLM's dense transformer inference path to work on IBM Spyre/AIU hardware. The conversion follows a three-phase pipeline:
+This project ports Triton kernels from vLLM's dense transformer inference path to work on IBM Spyre/AIU hardware. Spyre uses a tiled "stick" memory layout (128-byte aligned), so raw pointer arithmetic from GPU Triton kernels doesn't map directly. Block pointers abstract memory access into structured operations that can be lowered to Spyre's model. The conversion follows a three-phase pipeline:
 
 ```
 Raw-pointer Triton → Block-pointer Triton → KTIR (MLIR dialect for Spyre)

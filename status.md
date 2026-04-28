@@ -113,3 +113,9 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 | Decode attention stage 1 | 778 | Paged KV with indirect block table indexing |
 | Unified attention | 1268 | Combined prefill+decode, complex control flow |
 | Rotary embedding (non-multi) | — | Standard RoPE; lower priority since target models use MRoPE |
+
+---
+
+## Design Decisions
+
+- **Block-pointer API:** Using `tl.make_block_ptr` (stable) over `tl.make_tensor_descriptor` (newer) for compatibility.
