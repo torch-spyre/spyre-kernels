@@ -39,9 +39,6 @@ tritokti/
 │   │   ├── wrapper.py         # Python launcher
 │   │   └── kernel.ktir.mlir   # KTIR output
 │
-├── external/
-│   └── ktir_cpu/              # KTIR CPU interpreter (cloned separately)
-│
 ├── tests/
 │   ├── triton/                # GPU equivalence tests
 │   │   └── test_<name>.py
@@ -65,13 +62,8 @@ tritokti/
 ### Prerequisites
 
 ```bash
-# Activate the virtual environment
-source .venv/bin/activate
-
-# Or create a new environment with uv
-uv venv
-source .venv/bin/activate
-uv pip install -e .[test]
+# Install with test dependencies (includes ktir-cpu interpreter)
+uv sync --extra test
 ```
 
 ### Running Tests
@@ -87,14 +79,11 @@ pytest tests/triton/test_rms_norm.py -v
 
 **KTIR tests** validate KTIR output against the original vLLM kernels using the `ktir_cpu` interpreter:
 ```bash
-# Clone the ktir_cpu interpreter into external/ (one-time setup)
-git clone https://github.com/torch-spyre/ktir-cpu external/ktir_cpu
-
-# All KTIR tests (requires GPU + ktir_cpu)
-pytest tests/ktir/ -v
+# All KTIR tests (requires GPU + ktir-cpu, installed via uv sync --extra test)
+uv run pytest tests/ktir/ -v
 
 # Single kernel test
-pytest tests/ktir/test_rms_norm.py -v
+uv run pytest tests/ktir/test_rms_norm.py -v
 ```
 
 **All tests** at once:

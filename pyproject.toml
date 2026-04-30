@@ -3,7 +3,7 @@ name = "tritokti"
 version = "0.1.0"
 description = "Triton-to-KTIR kernel porting for vLLM on IBM Spyre"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.2.6",
     "torch>=2.4.0",
@@ -13,7 +13,12 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
+    "ktir-cpu",
 ]
+
+# TODO: switch to torch-spyre/ktir-cpu once https://github.com/torch-spyre/ktir-cpu/pull/20 is merged
+[tool.uv.sources]
+ktir-cpu = { git = "https://github.com/fabianlim/ktir-cpu", rev = "ca5e179" }
 
 [build-system]
 requires = ["hatchling"]

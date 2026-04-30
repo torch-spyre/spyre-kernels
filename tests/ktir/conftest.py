@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-import sys
-from pathlib import Path
+import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "external" / "ktir_cpu"))
+try:
+    import ktir_cpu  # noqa: F401
+except ImportError:
+    pytest.skip(
+        "ktir-cpu not installed (install with: uv sync --extra test)",
+        allow_module_level=True,
+    )
