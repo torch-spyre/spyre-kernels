@@ -63,7 +63,7 @@ module {
             %tlogic = tensor.extract %logit_tile[%c0_e, %c0_e] : tensor<1x1xf16>
             %tlogic_1d = tensor.splat %tlogic : tensor<1xf16>
 
-            %new_max = arith.maxf %running_max, %tlogic_1d : tensor<1xf16>
+            %new_max = arith.maximumf %running_max, %tlogic_1d : tensor<1xf16>
             scf.yield %new_max : tensor<1xf16>
         }
 

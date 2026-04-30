@@ -93,7 +93,7 @@ module {
             %slse = tensor.splat %slse_raw : tensor<1x64xf16>
 
             // max_lse = max(plse, slse)
-            %max_lse = arith.maxf %plse, %slse : tensor<1x64xf16>
+            %max_lse = arith.maximumf %plse, %slse : tensor<1x64xf16>
 
             // p_se = exp(plse - max_lse), s_se = exp(slse - max_lse)
             %p_diff = arith.subf %plse, %max_lse : tensor<1x64xf16>

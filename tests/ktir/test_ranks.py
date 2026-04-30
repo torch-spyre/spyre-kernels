@@ -29,14 +29,13 @@ def test_ranks_ktir():
 
     rng = np.random.default_rng(42)
     logits = rng.standard_normal((NUM_ROWS, VOCAB_SIZE)).astype(np.float16)
-    token_ids = rng.integers(0, VOCAB_SIZE, size=NUM_ROWS)
-    ref_logits = np.array([logits[i, token_ids[i]] for i in range(NUM_ROWS)], dtype=np.float16)
+    token_ids = rng.integers(0, VOCAB_SIZE, size=NUM_ROWS).astype(np.int64)
     output = np.zeros(NUM_ROWS, dtype=np.float16)
 
     outputs = interp.execute_function(
         "ranks_kernel",
         logits=logits,
-        ref_logits=ref_logits,
+        token_ids=token_ids,
         output=output,
         vocab_size=VOCAB_SIZE,
         BLOCK_SIZE=BLOCK_SIZE,
@@ -54,13 +53,13 @@ def test_ranks_all_same():
     interp.load(MLIR_PATH)
 
     logits = np.ones((NUM_ROWS, VOCAB_SIZE), dtype=np.float16)
-    ref_logits = np.ones(NUM_ROWS, dtype=np.float16)
+    token_ids = np.zeros(NUM_ROWS, dtype=np.int64)
     output = np.zeros(NUM_ROWS, dtype=np.float16)
 
     outputs = interp.execute_function(
         "ranks_kernel",
         logits=logits,
-        ref_logits=ref_logits,
+        token_ids=token_ids,
         output=output,
         vocab_size=VOCAB_SIZE,
         BLOCK_SIZE=BLOCK_SIZE,

@@ -82,15 +82,15 @@ module {
         %neg1_block = tensor.splat %neg1_f32 : tensor<1x1024xf32>
         %neg_silu = arith.mulf %silu, %neg1_block : tensor<1x1024xf32>
         %neg_limit_block = tensor.splat %neg_limit_f32 : tensor<1x1024xf32>
-        %neg_gate_max = arith.maxf %neg_silu, %neg_limit_block : tensor<1x1024xf32>
+        %neg_gate_max = arith.maximumf %neg_silu, %neg_limit_block : tensor<1x1024xf32>
         %gate_clamped = arith.mulf %neg_gate_max, %neg1_block : tensor<1x1024xf32>
 
         // up_clamped = clamp(up, -limit, limit) = min(max(up, -limit), limit)
         //   max(up, -limit) first:
-        %up_lower = arith.maxf %up, %neg_limit_block : tensor<1x1024xf32>
+        %up_lower = arith.maximumf %up, %neg_limit_block : tensor<1x1024xf32>
         //   min(up_lower, limit) = -max(-up_lower, -limit)
         %neg_up_lower = arith.mulf %up_lower, %neg1_block : tensor<1x1024xf32>
-        %neg_up_max = arith.maxf %neg_up_lower, %neg_limit_block : tensor<1x1024xf32>
+        %neg_up_max = arith.maximumf %neg_up_lower, %neg_limit_block : tensor<1x1024xf32>
         %up_clamped = arith.mulf %neg_up_max, %neg1_block : tensor<1x1024xf32>
 
         // result = gate_clamped * up_clamped  (f32)

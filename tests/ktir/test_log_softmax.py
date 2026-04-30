@@ -32,16 +32,13 @@ def test_log_softmax_ktir():
     logits = rng.standard_normal((NUM_ROWS, VOCAB_SIZE)).astype(np.float16)
     topk_ids = np.array([
         rng.choice(VOCAB_SIZE, size=TOPK, replace=False) for _ in range(NUM_ROWS)
-    ])
-    topk_logits = np.array([
-        [logits[i, topk_ids[i, k]] for k in range(TOPK)] for i in range(NUM_ROWS)
-    ], dtype=np.float16)
+    ], dtype=np.int64)
     output = np.zeros((NUM_ROWS, TOPK), dtype=np.float16)
 
     outputs = interp.execute_function(
         "log_softmax_kernel",
         logits=logits,
-        topk_logits=topk_logits,
+        topk_ids=topk_ids.astype(np.int64),
         output=output,
         vocab_size=VOCAB_SIZE,
         topk=TOPK,
@@ -63,13 +60,13 @@ def test_log_softmax_uniform():
     interp.load(MLIR_PATH)
 
     logits = np.ones((NUM_ROWS, VOCAB_SIZE), dtype=np.float16)
-    topk_logits = np.ones((NUM_ROWS, TOPK), dtype=np.float16)
+    topk_ids = np.tile(np.arange(TOPK, dtype=np.int64), (NUM_ROWS, 1))
     output = np.zeros((NUM_ROWS, TOPK), dtype=np.float16)
 
     outputs = interp.execute_function(
         "log_softmax_kernel",
         logits=logits,
-        topk_logits=topk_logits,
+        topk_ids=topk_ids,
         output=output,
         vocab_size=VOCAB_SIZE,
         topk=TOPK,

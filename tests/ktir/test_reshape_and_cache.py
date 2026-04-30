@@ -22,11 +22,11 @@ CACHE_SLOTS = NUM_BLOCKS * BLOCK_SIZE  # 64
 def vllm_reference(
     key_flat: np.ndarray,
     value_flat: np.ndarray,
-    slot_mapping_f16: np.ndarray,
+    slot_mapping: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run vLLM reshape_and_cache kernel on GPU.
 
-    KTIR layout: key/value [T, H*D], caches [slots, H*D], slot_mapping [T] f16
+    KTIR layout: key/value [T, H*D], caches [slots, H*D], slot_mapping [T] i64
     Wrapper layout: key/value [T, H, D], caches [num_blocks, block_size, H, D], slot_mapping [T] int64
     Returns: key_cache, value_cache as [slots, H*D] (KTIR layout)
     """
@@ -42,9 +42,9 @@ def vllm_reference(
     value_cache = torch.zeros(
         NUM_BLOCKS, BLOCK_SIZE, NUM_HEADS, HEAD_DIM, device="cuda", dtype=torch.float16
     )
-    slot_mapping = torch.from_numpy(slot_mapping_f16.astype(np.int64)).cuda()
+    slot_mapping_t = torch.from_numpy(slot_mapping.astype(np.int64)).cuda()
 
-    reshape_and_cache(key, value, key_cache, value_cache, slot_mapping)
+    reshape_and_cache(key, value, key_cache, value_cache, slot_mapping_t)
 
     kc = key_cache.reshape(CACHE_SLOTS, FLAT_DIM).cpu().numpy()
     vc = value_cache.reshape(CACHE_SLOTS, FLAT_DIM).cpu().numpy()
@@ -58,7 +58,7 @@ def test_reshape_and_cache_ktir():
     rng = np.random.default_rng(42)
     key = rng.standard_normal((NUM_TOKENS, FLAT_DIM)).astype(np.float16)
     value = rng.standard_normal((NUM_TOKENS, FLAT_DIM)).astype(np.float16)
-    slot_mapping = rng.choice(CACHE_SLOTS, size=NUM_TOKENS, replace=False).astype(np.float16)
+    slot_mapping = rng.choice(CACHE_SLOTS, size=NUM_TOKENS, replace=False).astype(np.int64)
 
     key_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)
     value_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)
@@ -98,7 +98,7 @@ def test_reshape_sequential_slots():
     rng = np.random.default_rng(7)
     key = rng.standard_normal((NUM_TOKENS, FLAT_DIM)).astype(np.float16)
     value = rng.standard_normal((NUM_TOKENS, FLAT_DIM)).astype(np.float16)
-    slot_mapping = np.arange(NUM_TOKENS, dtype=np.float16)
+    slot_mapping = np.arange(NUM_TOKENS, dtype=np.int64)
 
     key_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)
     value_cache = np.zeros((CACHE_SLOTS, FLAT_DIM), dtype=np.float16)

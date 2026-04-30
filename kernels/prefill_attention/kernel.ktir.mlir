@@ -116,7 +116,7 @@ module {
         // Softmax: row-wise max
         %mi_init = tensor.empty() : tensor<16xf16>
         %mi_neginf = linalg.fill ins(%neg_inf : f16) outs(%mi_init : tensor<16xf16>) -> tensor<16xf16>
-        %mi = linalg.reduce { arith.maxf }
+        %mi = linalg.reduce { arith.maximumf }
                 ins(%qk_masked : tensor<16x16xf16>)
                 outs(%mi_neginf : tensor<16xf16>)
                 dimensions = [1]

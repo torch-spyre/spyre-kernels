@@ -6,10 +6,8 @@
 //   3. lse = log(sum)
 //   4. output[k] = topk_logit_f32[k] - max - lse
 //
-// Interface difference from block-pointer Triton kernel:
-// The block-ptr kernel gathers top-k logits via indirect indexing:
-//   tl.load(row_ptr + topk_ids)
-// KTDP pre-extracts topk_logits on the host to avoid data-dependent gathers.
+// Uses construct_indirect_access_tile with ind() to gather the top-k logit
+// values on-chip: logits[row, topk_ids[row, k]] for k=0..7.
 //
 // Concrete sizes: 32 rows, vocab_size=4096, topk=8, BLOCK_SIZE=1024
 // Grid: [32, 1] — one core per row
@@ -17,7 +15,7 @@
 module {
   func.func @log_softmax_kernel(
       %logits: index,        // logits 32x4096xf16
-      %topk_logits: index,   // pre-extracted topk logit values 32x8xf16
+      %topk_ids: index,      // topk_ids 32x8xi64
       %output: index,        // output 32x8xf16
       %vocab_size: index,    // 4096
       %topk: index,          // 8
@@ -35,10 +33,10 @@ module {
         memory_space = #ktdp.spyre_memory_space<HBM>
     } : memref<32x4096xf16>
 
-    %topk_logits_view = ktdp.construct_memory_view %topk_logits, sizes: [32, 8], strides: [8, 1] {
+    %topk_ids_view = ktdp.construct_memory_view %topk_ids, sizes: [32, 8], strides: [8, 1] {
         coordinate_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 31 >= 0, d1 >= 0, -d1 + 7 >= 0)>,
         memory_space = #ktdp.spyre_memory_space<HBM>
-    } : memref<32x8xf16>
+    } : memref<32x8xi64>
 
     %output_view = ktdp.construct_memory_view %output, sizes: [32, 8], strides: [8, 1] {
         coordinate_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 31 >= 0, d1 >= 0, -d1 + 7 >= 0)>,
@@ -60,14 +58,14 @@ module {
 
             %logit_f16 = ktdp.load %L_acc : !ktdp.access_tile<1x1024xindex> -> tensor<1x1024xf16>
             %logit_f32 = arith.extf %logit_f16 : tensor<1x1024xf16> to tensor<1x1024xf32>
-            %new_max = arith.maxf %running_max, %logit_f32 : tensor<1x1024xf32>
+            %new_max = arith.maximumf %running_max, %logit_f32 : tensor<1x1024xf32>
 
             scf.yield %new_max : tensor<1x1024xf32>
         }
 
         // Reduce 1x1024 → scalar max (f32)
         %max_reduce_init = tensor.splat %neg_inf_f32 : tensor<1xf32>
-        %max_row = linalg.reduce { arith.maxf }
+        %max_row = linalg.reduce { arith.maximumf }
             ins(%max_block : tensor<1x1024xf32>)
             outs(%max_reduce_init : tensor<1xf32>)
             dimensions = [1]
@@ -112,11 +110,13 @@ module {
         %log_tile = math.log %lse_tile : tensor<1xf32>
         %lse_scalar = tensor.extract %log_tile[%c0_ext] : tensor<1xf32>
 
-        // === Compute output: topk_logit_f32 - max - lse (all f32) ===
-        %topk_acc = ktdp.construct_access_tile %topk_logits_view[%row, %c0] {
-            access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 7 >= 0)>,
-            access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
-        } : memref<32x8xf16> -> !ktdp.access_tile<1x8xindex>
+        // === Gather top-k logits via ind() and compute output ===
+        %topk_acc = ktdp.construct_indirect_access_tile
+            intermediate_variables (%d0, %d1)
+            %logits_view[(%row + %d0), ind(%topk_ids_view[%row + %d0, %d1])] {
+              variables_space_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 7 >= 0)>,
+              variables_space_order = affine_map<(d0, d1) -> (d0, d1)>
+            } : memref<32x4096xf16>, memref<32x8xi64> -> !ktdp.access_tile<1x8xindex>
 
         %topk_f16 = ktdp.load %topk_acc : !ktdp.access_tile<1x8xindex> -> tensor<1x8xf16>
         %topk_f32 = arith.extf %topk_f16 : tensor<1x8xf16> to tensor<1x8xf32>
@@ -128,7 +128,6 @@ module {
         %result_f32 = arith.subf %shifted_topk, %lse_splat8 : tensor<1x8xf32>
         %result = arith.truncf %result_f32 : tensor<1x8xf32> to tensor<1x8xf16>
 
-        // Store output (truncated to f16 for interpreter compatibility)
         %out_acc = ktdp.construct_access_tile %output_view[%row, %c0] {
             access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 7 >= 0)>,
             access_tile_order = affine_map<(d0, d1) -> (d0, d1)>

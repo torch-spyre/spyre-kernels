@@ -126,7 +126,7 @@ module {
             // Upcast to f32
             %x2_f32 = arith.extf %x2_f16 : tensor<1x1024xf16> to tensor<1x1024xf32>
             %w_1d_f32 = arith.extf %w_f16 : tensor<1024xf16> to tensor<1024xf32>
-            %w_block_f32 = tensor.expand_shape %w_1d_f32 [[0, 1]] : tensor<1024xf32> into tensor<1x1024xf32>
+            %w_block_f32 = tensor.expand_shape %w_1d_f32 [[0, 1]] output_shape [1, 1024] : tensor<1024xf32> into tensor<1x1024xf32>
 
             // Normalize: x * inv_rms * weight  (all f32)
             %normed = arith.mulf %x2_f32, %inv_rms_block : tensor<1x1024xf32>

@@ -3,12 +3,9 @@
 // Algorithm: For each row, count how many logit values are >= the reference
 //            logit (at position token_id). Output is a count per row.
 //
-// Interface difference from block-pointer Triton kernel:
-// The block-ptr kernel takes token_ids and does a data-dependent gather:
-//   ref_logit = logits[row, token_ids[row]]
-// KTDP cannot express data-dependent gathers, so we pre-extract reference
-// logits on the host: ref_logits[i] = logits[i, token_ids[i]]
-// This is semantically equivalent — the gather is just hoisted to the caller.
+// Uses construct_indirect_access_tile with ind() to perform the scalar
+// gather logits[row, token_ids[row]] on-chip, matching the Triton kernel's
+// data-dependent access pattern.
 //
 // Concrete sizes: 32 rows, vocab_size=4096, BLOCK_SIZE=1024
 // Grid: [32, 1]
@@ -16,7 +13,7 @@
 module {
   func.func @ranks_kernel(
       %logits: index,      // logits 32x4096xf16
-      %ref_logits: index,  // ref_logits 32xf16 (pre-extracted reference values)
+      %token_ids: index,   // token_ids 32xi64
       %output: index,      // output 32xf16 (counts as f16)
       %vocab_size: index,  // 4096
       %BLOCK_SIZE: index   // 1024
@@ -33,10 +30,10 @@ module {
         memory_space = #ktdp.spyre_memory_space<HBM>
     } : memref<32x4096xf16>
 
-    %ref_view = ktdp.construct_memory_view %ref_logits, sizes: [32], strides: [1] {
+    %token_ids_view = ktdp.construct_memory_view %token_ids, sizes: [32], strides: [1] {
         coordinate_set = affine_set<(d0) : (d0 >= 0, -d0 + 31 >= 0)>,
         memory_space = #ktdp.spyre_memory_space<HBM>
-    } : memref<32xf16>
+    } : memref<32xi64>
 
     %output_view = ktdp.construct_memory_view %output, sizes: [32], strides: [1] {
         coordinate_set = affine_set<(d0) : (d0 >= 0, -d0 + 31 >= 0)>,
@@ -45,11 +42,13 @@ module {
 
     scf.for %row = %core_id to %c32 step %c32 : index {
 
-        // Load the reference logit for this row
-        %ref_acc = ktdp.construct_access_tile %ref_view[%row] {
-            access_tile_set = affine_set<(d0) : (d0 >= 0, -d0 + 0 >= 0)>,
-            access_tile_order = affine_map<(d0) -> (d0)>
-        } : memref<32xf16> -> !ktdp.access_tile<1xindex>
+        // Scalar gather: logits[row, token_ids[row]]
+        %ref_acc = ktdp.construct_indirect_access_tile
+            intermediate_variables (%d0)
+            %logits_view[(%row + %d0), ind(%token_ids_view[%row + %d0])] {
+              variables_space_set = affine_set<(d0) : (d0 >= 0, -d0 + 0 >= 0)>,
+              variables_space_order = affine_map<(d0) -> (d0)>
+            } : memref<32x4096xf16>, memref<32xi64> -> !ktdp.access_tile<1xindex>
 
         %ref_tile = ktdp.load %ref_acc : !ktdp.access_tile<1xindex> -> tensor<1xf16>
         %c0_ext = arith.constant 0 : index
