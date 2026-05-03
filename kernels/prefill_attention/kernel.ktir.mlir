@@ -24,7 +24,6 @@ module {
       %k_ptr: index,       // K: [16, 256] xf16
       %v_ptr: index,       // V: [16, 256] xf16
       %output_ptr: index,  // Output: [16, 256] xf16
-      %causal_mask_ptr: index,  // Causal mask: [16, 16] xf16 (0 or -1e8)
       %num_heads: index    // 4
   ) attributes {grid = [4, 1]} {
     %core_id = ktdp.get_compute_tile_id : index
@@ -62,11 +61,14 @@ module {
         memory_space = #ktdp.spyre_memory_space<HBM>
     } : memref<16x256xf16>
 
-    // Causal mask: [16, 16] (pre-computed: 0 on lower triangle, -1e8 on upper)
-    %mask_view = ktdp.construct_memory_view %causal_mask_ptr, sizes: [16, 16], strides: [16, 1] {
-        coordinate_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 15 >= 0, d1 >= 0, -d1 + 15 >= 0)>,
-        memory_space = #ktdp.spyre_memory_space<HBM>
-    } : memref<16x16xf16>
+    // Causal mask: [16, 16] generated on-chip
+    // mask[i, j] = 0.0 if i >= j (lower triangle), -10000.0 otherwise (upper)
+    %causal_mask = tensor.generate {
+    ^bb0(%i: index, %j: index):
+        %cmp = arith.cmpi sge, %i, %j : index
+        %val = arith.select %cmp, %zero_f16, %mask_val : f16
+        tensor.yield %val : f16
+    } : tensor<16x16xf16>
 
     // Each core handles one head
     scf.for %head = %core_id to %c4 step %c4 : index {
@@ -102,14 +104,6 @@ module {
         // Scale: QK * scale
         %scale_splat = tensor.splat %scale : tensor<16x16xf16>
         %qk_scaled = arith.mulf %qk, %scale_splat : tensor<16x16xf16>
-
-        // Load pre-computed causal mask: [16, 16]
-        %mask_acc = ktdp.construct_access_tile %mask_view[%c0, %c0] {
-            access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 15 >= 0, d1 >= 0, -d1 + 15 >= 0)>,
-            access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
-        } : memref<16x16xf16> -> !ktdp.access_tile<16x16xindex>
-
-        %causal_mask = ktdp.load %mask_acc : !ktdp.access_tile<16x16xindex> -> tensor<16x16xf16>
 
         %qk_masked = arith.addf %qk_scaled, %causal_mask : tensor<16x16xf16>
 

@@ -76,10 +76,10 @@ module {
             %c0_e = arith.constant 0 : index
             %plse_raw = tensor.extract %plse_tile[%c0_e, %c0_e] : tensor<1x1xf16>
 
-            // Note: The block-ptr kernel has FA2 compat (inf→-inf) but
-            // this KTIR version omits it since the interpreter's arith.cmpi eq
-            // on f16 scalars has issues. Test data is well-behaved (no inf).
-            %plse = tensor.splat %plse_raw : tensor<1x64xf16>
+            // FA2 compat: replace +inf LSE with -inf
+            %plse_is_inf = arith.cmpf oeq, %plse_raw, %pos_inf : f16
+            %plse_fixed = arith.select %plse_is_inf, %neg_inf, %plse_raw : f16
+            %plse = tensor.splat %plse_fixed : tensor<1x64xf16>
 
             // Load suffix LSE scalar
             %slse_acc = ktdp.construct_access_tile %slse_view[%head, %token_id] {
@@ -89,8 +89,10 @@ module {
             %slse_tile = ktdp.load %slse_acc : !ktdp.access_tile<1x1xindex> -> tensor<1x1xf16>
             %slse_raw = tensor.extract %slse_tile[%c0_e, %c0_e] : tensor<1x1xf16>
 
-            // Note: inf→-inf check omitted for interpreter compatibility
-            %slse = tensor.splat %slse_raw : tensor<1x64xf16>
+            // FA2 compat: replace +inf LSE with -inf
+            %slse_is_inf = arith.cmpf oeq, %slse_raw, %pos_inf : f16
+            %slse_fixed = arith.select %slse_is_inf, %neg_inf, %slse_raw : f16
+            %slse = tensor.splat %slse_fixed : tensor<1x64xf16>
 
             // max_lse = max(plse, slse)
             %max_lse = arith.maximumf %plse, %slse : tensor<1x64xf16>

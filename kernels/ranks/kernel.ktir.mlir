@@ -68,9 +68,7 @@ module {
 
             %logit_block = ktdp.load %L_acc : !ktdp.access_tile<1x1024xindex> -> tensor<1x1024xf16>
 
-            // Compare: logits >= ref (using cmpi sge which the interpreter
-            // evaluates as numpy >= on the underlying f16 data)
-            %cmp = arith.cmpi sge, %logit_block, %ref_block : tensor<1x1024xf16>
+            %cmp = arith.cmpf oge, %logit_block, %ref_block : tensor<1x1024xf16>
 
             // cmp is a boolean tile; select 1.0 where true, 0.0 where false
             %ones = tensor.splat %f1 : tensor<1x1024xf16>

@@ -7,12 +7,9 @@
 //   up_f32   = float32(up)
 //   sigmoid_gate = 1.0 / (1.0 + exp(-gate_f32))
 //   silu_gate = sigmoid_gate * gate_f32
-//   gate_clamped = min(silu_gate, limit)       // = -max(-silu_gate, -limit)
-//   up_clamped   = clamp(up_f32, -limit, limit) // = -max(-max(up, -limit), -limit)
+//   gate_clamped = min(silu_gate, limit)
+//   up_clamped   = clamp(up_f32, -limit, limit)
 //   result = float16(gate_clamped * up_clamped)
-//
-// Note: The interpreter lacks arith.minimumf, so min is implemented as
-// -max(-a, -b). This is equivalent for finite values.
 //
 // Concrete sizes: 32 rows, d=1024, input [32, 2048], output [32, 1024]
 // Grid: [32, 1] — one core per row
@@ -29,7 +26,6 @@ module {
     %c32 = arith.constant 32 : index
     %f0_f32 = arith.constant 0.0 : f32
     %f1_f32 = arith.constant 1.0 : f32
-    %neg1_f32 = arith.constant -1.0 : f32
     %limit_f32 = arith.constant 7.0 : f32
     %neg_limit_f32 = arith.constant -7.0 : f32
 
@@ -78,20 +74,14 @@ module {
         // silu(gate) = sigmoid(gate) * gate  (f32)
         %silu = arith.mulf %sigmoid, %gate : tensor<1x1024xf32>
 
-        // gate_clamped = min(silu, limit) = -max(-silu, -limit)
-        %neg1_block = tensor.splat %neg1_f32 : tensor<1x1024xf32>
-        %neg_silu = arith.mulf %silu, %neg1_block : tensor<1x1024xf32>
-        %neg_limit_block = tensor.splat %neg_limit_f32 : tensor<1x1024xf32>
-        %neg_gate_max = arith.maximumf %neg_silu, %neg_limit_block : tensor<1x1024xf32>
-        %gate_clamped = arith.mulf %neg_gate_max, %neg1_block : tensor<1x1024xf32>
+        // gate_clamped = min(silu, limit)
+        %limit_block = tensor.splat %limit_f32 : tensor<1x1024xf32>
+        %gate_clamped = arith.minimumf %silu, %limit_block : tensor<1x1024xf32>
 
         // up_clamped = clamp(up, -limit, limit) = min(max(up, -limit), limit)
-        //   max(up, -limit) first:
+        %neg_limit_block = tensor.splat %neg_limit_f32 : tensor<1x1024xf32>
         %up_lower = arith.maximumf %up, %neg_limit_block : tensor<1x1024xf32>
-        //   min(up_lower, limit) = -max(-up_lower, -limit)
-        %neg_up_lower = arith.mulf %up_lower, %neg1_block : tensor<1x1024xf32>
-        %neg_up_max = arith.maximumf %neg_up_lower, %neg_limit_block : tensor<1x1024xf32>
-        %up_clamped = arith.mulf %neg_up_max, %neg1_block : tensor<1x1024xf32>
+        %up_clamped = arith.minimumf %up_lower, %limit_block : tensor<1x1024xf32>
 
         // result = gate_clamped * up_clamped  (f32)
         %result_f32 = arith.mulf %gate_clamped, %up_clamped : tensor<1x1024xf32>

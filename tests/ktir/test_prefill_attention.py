@@ -39,14 +39,6 @@ def vllm_reference(
     return o.reshape(SEQ_LEN, FLAT_DIM).cpu().numpy().astype(np.float16)
 
 
-def _make_causal_mask(seq_len):
-    """Create causal mask: 0 on lower triangle (including diagonal), -1e4 on upper."""
-    mask = np.zeros((seq_len, seq_len), dtype=np.float16)
-    for i in range(seq_len):
-        for j in range(seq_len):
-            if j > i:
-                mask[i, j] = np.float16(-10000.0)
-    return mask
 
 
 def test_prefill_attention_ktir():
@@ -58,7 +50,6 @@ def test_prefill_attention_ktir():
     k = (rng.standard_normal((SEQ_LEN, FLAT_DIM)) * 0.1).astype(np.float16)
     v = (rng.standard_normal((SEQ_LEN, FLAT_DIM)) * 0.1).astype(np.float16)
     output = np.zeros((SEQ_LEN, FLAT_DIM), dtype=np.float16)
-    causal_mask = _make_causal_mask(SEQ_LEN)
 
     outputs = interp.execute_function(
         "prefill_attention_kernel",
@@ -66,7 +57,6 @@ def test_prefill_attention_ktir():
         k_ptr=k,
         v_ptr=v,
         output_ptr=output,
-        causal_mask_ptr=causal_mask,
         num_heads=NUM_HEADS,
     )
     result = outputs["output_ptr"]
@@ -90,7 +80,6 @@ def test_prefill_attention_uniform():
     rng = np.random.default_rng(7)
     v = rng.standard_normal((SEQ_LEN, FLAT_DIM)).astype(np.float16)
     output = np.zeros((SEQ_LEN, FLAT_DIM), dtype=np.float16)
-    causal_mask = _make_causal_mask(SEQ_LEN)
 
     outputs = interp.execute_function(
         "prefill_attention_kernel",
@@ -98,7 +87,6 @@ def test_prefill_attention_uniform():
         k_ptr=k,
         v_ptr=v,
         output_ptr=output,
-        causal_mask_ptr=causal_mask,
         num_heads=NUM_HEADS,
     )
     result = outputs["output_ptr"]

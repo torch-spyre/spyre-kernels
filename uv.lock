@@ -121,8 +121,8 @@ wheels = [
 
 [[package]]
 name = "ktir-cpu"
-version = "0.1.dev12+gca5e17992"
-source = { git = "https://github.com/fabianlim/ktir-cpu?rev=ca5e179#ca5e17992c35b5f14c69da7f95a80856d016ea0d" }
+version = "0.1.dev15+ga0448d515"
+source = { git = "https://github.com/fabianlim/ktir-cpu?rev=a0448d5#a0448d5151a7cd4c1dd433b7be43f6ef58a86376" }
 dependencies = [
     { name = "numpy" },
 ]
@@ -543,7 +543,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "ktir-cpu", marker = "extra == 'test'", git = "https://github.com/fabianlim/ktir-cpu?rev=ca5e179" },
+    { name = "ktir-cpu", marker = "extra == 'test'", git = "https://github.com/fabianlim/ktir-cpu?rev=a0448d5" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0" },
     { name = "torch", specifier = ">=2.4.0" },

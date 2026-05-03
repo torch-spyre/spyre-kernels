@@ -1,11 +1,14 @@
 // Decode softmax + reduceV (stage 2) kernel in KTDP dialect
 //
-// Two-pass approach (equivalent to online softmax for pre-computed split data):
-//   Pass 1: Find max logit and compute log-sum-exp across splits
-//   Pass 2: Compute weighted sum of V vectors using softmax weights
-//
-// This avoids multi-result scf.for which the KTIR interpreter doesn't support.
-// Numerically equivalent to the online softmax in the block-pointer kernel.
+// Online softmax merge — single-pass approach matching the block-pointer Triton:
+//   for each split:
+//     n_e_max = max(tlogic, e_max)
+//     old_scale = exp(e_max - n_e_max)
+//     acc = acc * old_scale + exp(tlogic - n_e_max) * V
+//     e_sum = e_sum * old_scale + exp(tlogic - n_e_max)
+//     e_max = n_e_max
+//   output = acc / e_sum
+//   lse = e_max + log(e_sum)
 //
 // Concrete sizes: batch=4, heads=8, NUM_KV_SPLITS=4, Lv=64
 // Grid: [32, 1] — one core per (batch, head) pair
@@ -46,14 +49,27 @@ module {
         %base_row = arith.muli %pair_id, %c4 : index
         %c0_e = arith.constant 0 : index
 
-        // ═══ Pass 1: Find max logit across splits ═══
-        %max_init = tensor.splat %neg_inf : tensor<1xf16>
+        // Initial values for online softmax
+        %emax_init = tensor.splat %neg_inf : tensor<1xf16>
+        %esum_init = tensor.splat %f0 : tensor<1xf16>
+        %acc_init = arith.constant dense<0.0> : tensor<1x64xf16>
 
-        %max_logit = scf.for %split = %c0 to %num_splits step %c1
-            iter_args(%running_max = %max_init) -> tensor<1xf16> {
+        // Single-pass online softmax merge
+        %emax_final, %esum_final, %acc_final = scf.for %split = %c0 to %num_splits step %c1
+            iter_args(%e_max = %emax_init, %e_sum = %esum_init, %acc = %acc_init)
+            -> (tensor<1xf16>, tensor<1xf16>, tensor<1x64xf16>) {
 
             %row = arith.addi %base_row, %split : index
 
+            // Load V vector for this split
+            %v_tile_acc = ktdp.construct_access_tile %mid_o_view[%row, %c0] {
+                access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 63 >= 0)>,
+                access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
+            } : memref<128x65xf16> -> !ktdp.access_tile<1x64xindex>
+
+            %tv = ktdp.load %v_tile_acc : !ktdp.access_tile<1x64xindex> -> tensor<1x64xf16>
+
+            // Load logit scalar for this split
             %logit_acc = ktdp.construct_access_tile %mid_o_view[%row, %c64] {
                 access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 0 >= 0)>,
                 access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
@@ -63,78 +79,39 @@ module {
             %tlogic = tensor.extract %logit_tile[%c0_e, %c0_e] : tensor<1x1xf16>
             %tlogic_1d = tensor.splat %tlogic : tensor<1xf16>
 
-            %new_max = arith.maximumf %running_max, %tlogic_1d : tensor<1xf16>
-            scf.yield %new_max : tensor<1xf16>
+            // n_e_max = max(tlogic, e_max)
+            %n_e_max = arith.maximumf %tlogic_1d, %e_max : tensor<1xf16>
+
+            // old_scale = exp(e_max - n_e_max)
+            %diff_old = arith.subf %e_max, %n_e_max : tensor<1xf16>
+            %old_scale = math.exp %diff_old : tensor<1xf16>
+
+            // exp_logic = exp(tlogic - n_e_max)
+            %diff_new = arith.subf %tlogic_1d, %n_e_max : tensor<1xf16>
+            %exp_logic = math.exp %diff_new : tensor<1xf16>
+
+            // acc = acc * old_scale + exp_logic * tv
+            %old_scale_scalar = tensor.extract %old_scale[%c0_e] : tensor<1xf16>
+            %old_scale_2d = tensor.splat %old_scale_scalar : tensor<1x64xf16>
+            %acc_scaled = arith.mulf %acc, %old_scale_2d : tensor<1x64xf16>
+
+            %exp_logic_scalar = tensor.extract %exp_logic[%c0_e] : tensor<1xf16>
+            %exp_logic_2d = tensor.splat %exp_logic_scalar : tensor<1x64xf16>
+            %weighted_v = arith.mulf %exp_logic_2d, %tv : tensor<1x64xf16>
+
+            %new_acc = arith.addf %acc_scaled, %weighted_v : tensor<1x64xf16>
+
+            // e_sum = e_sum * old_scale + exp_logic
+            %esum_scaled = arith.mulf %e_sum, %old_scale : tensor<1xf16>
+            %new_esum = arith.addf %esum_scaled, %exp_logic : tensor<1xf16>
+
+            scf.yield %n_e_max, %new_esum, %new_acc : tensor<1xf16>, tensor<1xf16>, tensor<1x64xf16>
         }
 
-        %max_scalar = tensor.extract %max_logit[%c0_e] : tensor<1xf16>
-
-        // ═══ Pass 1b: Compute sum(exp(logit - max)) ═══
-        %sum_init = tensor.splat %f0 : tensor<1xf16>
-
-        %sum_exp = scf.for %split = %c0 to %num_splits step %c1
-            iter_args(%running_sum = %sum_init) -> tensor<1xf16> {
-
-            %row = arith.addi %base_row, %split : index
-
-            %logit_acc = ktdp.construct_access_tile %mid_o_view[%row, %c64] {
-                access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 0 >= 0)>,
-                access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
-            } : memref<128x65xf16> -> !ktdp.access_tile<1x1xindex>
-
-            %logit_tile = ktdp.load %logit_acc : !ktdp.access_tile<1x1xindex> -> tensor<1x1xf16>
-            %tlogic = tensor.extract %logit_tile[%c0_e, %c0_e] : tensor<1x1xf16>
-
-            %diff = arith.subf %tlogic, %max_scalar : f16
-            %diff_tile = tensor.splat %diff : tensor<1xf16>
-            %exp_tile = math.exp %diff_tile : tensor<1xf16>
-
-            %new_sum = arith.addf %running_sum, %exp_tile : tensor<1xf16>
-            scf.yield %new_sum : tensor<1xf16>
-        }
-
-        // ═══ Pass 2: Weighted sum of V vectors ═══
-        %acc_init = arith.constant dense<0.0> : tensor<1x64xf16>
-
-        %acc = scf.for %split = %c0 to %num_splits step %c1
-            iter_args(%running_acc = %acc_init) -> tensor<1x64xf16> {
-
-            %row = arith.addi %base_row, %split : index
-
-            // Load V
-            %v_tile_acc = ktdp.construct_access_tile %mid_o_view[%row, %c0] {
-                access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 63 >= 0)>,
-                access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
-            } : memref<128x65xf16> -> !ktdp.access_tile<1x64xindex>
-
-            %v_tile = ktdp.load %v_tile_acc : !ktdp.access_tile<1x64xindex> -> tensor<1x64xf16>
-
-            // Load logit and compute weight = exp(logit - max)
-            %logit_acc = ktdp.construct_access_tile %mid_o_view[%row, %c64] {
-                access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 0 >= 0)>,
-                access_tile_order = affine_map<(d0, d1) -> (d0, d1)>
-            } : memref<128x65xf16> -> !ktdp.access_tile<1x1xindex>
-
-            %logit_tile = ktdp.load %logit_acc : !ktdp.access_tile<1x1xindex> -> tensor<1x1xf16>
-            %tlogic = tensor.extract %logit_tile[%c0_e, %c0_e] : tensor<1x1xf16>
-
-            %diff = arith.subf %tlogic, %max_scalar : f16
-            %diff_tile = tensor.splat %diff : tensor<1xf16>
-            %weight_tile = math.exp %diff_tile : tensor<1xf16>
-            %weight_scalar = tensor.extract %weight_tile[%c0_e] : tensor<1xf16>
-            %weight_2d = tensor.splat %weight_scalar : tensor<1x64xf16>
-
-            // acc += weight * V
-            %weighted_v = arith.mulf %weight_2d, %v_tile : tensor<1x64xf16>
-            %new_acc = arith.addf %running_acc, %weighted_v : tensor<1x64xf16>
-
-            scf.yield %new_acc : tensor<1x64xf16>
-        }
-
-        // output = acc / sum_exp
-        %sum_scalar = tensor.extract %sum_exp[%c0_e] : tensor<1xf16>
-        %sum_2d = tensor.splat %sum_scalar : tensor<1x64xf16>
-        %final_out = arith.divf %acc, %sum_2d : tensor<1x64xf16>
+        // output = acc / e_sum
+        %esum_scalar = tensor.extract %esum_final[%c0_e] : tensor<1xf16>
+        %esum_2d = tensor.splat %esum_scalar : tensor<1x64xf16>
+        %final_out = arith.divf %acc_final, %esum_2d : tensor<1x64xf16>
 
         %out_acc = ktdp.construct_access_tile %output_view[%pair_id, %c0] {
             access_tile_set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 0 >= 0, d1 >= 0, -d1 + 63 >= 0)>,
@@ -143,10 +120,9 @@ module {
 
         ktdp.store %final_out, %out_acc : tensor<1x64xf16>, !ktdp.access_tile<1x64xindex>
 
-        // lse = max + log(sum_exp)
-        %log_sum = math.log %sum_exp : tensor<1xf16>
-        %max_1d = tensor.splat %max_scalar : tensor<1xf16>
-        %lse_val = arith.addf %max_1d, %log_sum : tensor<1xf16>
+        // lse = e_max + log(e_sum)
+        %log_esum = math.log %esum_final : tensor<1xf16>
+        %lse_val = arith.addf %emax_final, %log_esum : tensor<1xf16>
 
         %lse_acc = ktdp.construct_access_tile %lse_view[%pair_id] {
             access_tile_set = affine_set<(d0) : (d0 >= 0, -d0 + 0 >= 0)>,
