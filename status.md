@@ -27,15 +27,15 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 
 ### SwiGLU
 - 1D block pointers for gate, up, output — fully converted
-- KTIR: clamping via `-max(-a, -b)` pattern (no `minimumf`/`maximumf` available); f32 upcast for accumulation
+- KTIR: f32 upcast for accumulation
 
 ### Ranks
 - 1D block pointer for logits loop; scalar loads remain for `token_id` and `ref_logit` (data-dependent)
-- KTIR: pre-extracted `ref_logits` on host since KTIR can't do indirect loads
+- KTIR: `%token_ids` (memref<32xi64>) passed directly; on-chip gather via `construct_indirect_access_tile` + `ind()`
 
 ### Log-Softmax
 - 1D block pointers for vocab reduction loops; top-k gather remains raw (indirect)
-- KTIR: f32 accumulation for both reduction passes; pre-extracted `topk_logits` on host
+- KTIR: f32 accumulation for both reduction passes; `%topk_ids` (memref<32x8xi64>) passed directly; on-chip gather via `construct_indirect_access_tile` + `ind()`
 
 ### Decode Softmax+ReduceV
 - 1D block pointer per split for V data; scalar LSE and seq_len loads remain
@@ -43,7 +43,7 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 
 ### Merge Attention States
 - 1D block pointers for head-dim loads; scalar LSE loads remain
-- KTIR: FA2 inf→-inf handling omitted (`arith.cmpi eq` unreliable on scalars in interpreter)
+- KTIR: FA2 inf→-inf handling via `arith.cmpf oeq` on scalar LSE values
 
 ### MRoPE
 - 2D block pointers `[n_heads, half_rd]` for q/k halves; cos/sin masked gathers remain (3 T/H/W sources)
@@ -53,11 +53,11 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 
 ### KV Cache Reshape
 - 1D block pointers for source key/value loads; cache stores remain raw (scatter via `slot_mapping`)
-- KTIR: f16 `slot_mapping` has precision limit beyond ~2048 slots; negative-slot guard omitted
+- KTIR: f16 `slot_mapping` replaced with i64 memref; direct i64→index_cast eliminates f16 precision limit and removes dependency on unimplemented `arith.fptosi`; negative-slot guard omitted
 
 ### Prefill Attention
 - 2D block pointers for Q `[M,D]`, K `[D,N]`, V `[N,D]`, O `[M,D]`; K/V advance by `BLOCK_N` per iteration
-- KTIR: pre-computed causal mask as input tensor (`tensor.generate` unsupported in interpreter)
+- KTIR: causal mask generated on-chip via `tensor.generate`
 
 ---
 
@@ -86,22 +86,12 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 
 | Pattern | Kernels affected | Approach |
 |---------|-----------------|----------|
-| No indirect loads | ranks, log-softmax | Pre-extract data on host |
 | No masked gather | mrope | Pre-merge cos/sin tables |
-| No `tensor.generate` | prefill attention | Pre-compute causal mask on host |
-| No multi-result `scf.for` | decode softmax+reduceV | Restructure as two single-result passes |
-| Limited slot precision | reshape/cache | f16 `slot_mapping` (breaks beyond ~2048 slots) |
 
 **Interpreter workarounds:**
 
 | Limitation | Workaround |
 |-----------|------------|
-| No `arith.cmpf` (float compare) | Use `arith.cmpi sge/eq` |
-| No `arith.minimumf`/`arith.maximumf` | `-max(-a, -b)` pattern |
-| No `tensor.generate` | Pre-compute on host |
-| No multi-result `scf.for` | Single-result loops |
-| `arith.select` hardcodes f16 | Only use for f16 values |
-| f32 memref output may not dispatch | Truncate to f16 before store |
 
 ---
 
