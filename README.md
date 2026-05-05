@@ -14,19 +14,20 @@ Raw-pointer Triton → Block-pointer Triton → KTIR (MLIR dialect for Spyre)
 
 ## Kernel Inventory
 
-| # | Kernel | Component |
-|---|--------|-----------|
-| 1 | `rms_norm` | RMSNorm normalization |
-| 2 | `silu_and_mul` | SwiGLU activation |
-| 3 | `ranks` | Logprob ranks |
-| 4 | `log_softmax` | Top-K log-softmax |
-| 5 | `decode_softmax_reducev` | Decode attention merge |
-| 6 | `merge_attn_states` | Attention state merge |
-| 7 | `mrope` | Multi-RoPE embeddings |
-| 8 | `reshape_and_cache` | KV cache reshape |
-| 9 | `prefill_attention` | Prefill SDPA |
+| # | Kernel | Source | Component |
+|---|--------|--------|-----------|
+| 1 | `rms_norm` | vLLM | RMSNorm normalization |
+| 2 | `silu_and_mul` | vLLM | SwiGLU activation |
+| 3 | `ranks` | vLLM | Logprob ranks |
+| 4 | `log_softmax` | vLLM | Top-K log-softmax |
+| 5 | `decode_softmax_reducev` | vLLM | Decode attention merge |
+| 6 | `merge_attn_states` | vLLM | Attention state merge |
+| 7 | `mrope` | vLLM | Multi-RoPE embeddings |
+| 8 | `reshape_and_cache` | vLLM | KV cache reshape |
+| 9 | `prefill_attention` | vLLM | Prefill SDPA |
+| 10 | `matmul` | Triton | Dense matrix multiplication (GEMM) |
 
-All kernels are extracted verbatim from vLLM commit [`cde8d2471026`](https://github.com/vllm-project/vllm/commit/cde8d2471026).
+Kernels are extracted from vLLM commit [`cde8d2471026`](https://github.com/vllm-project/vllm/commit/cde8d2471026) and Triton commit [`933cefce4`](https://github.com/triton-lang/triton/commit/933cefce4ecbb1600bac10e975d1e6fad166b587).
 
 ## Project Structure
 
@@ -132,28 +133,47 @@ python scripts/fetch_originals.py --diff
 
 ### 1. Add to Registry
 
-Edit `kernels.json`:
+Edit `kernels.json`. The registry supports multiple sources (vLLM, Triton, etc.):
 
 ```json
 {
-  "repo": "vllm-project/vllm",
-  "commit": "cde8d2471026",
+  "sources": {
+    "vllm": {
+      "repo": "vllm-project/vllm",
+      "commit": "cde8d2471026",
+      "license_header": "# SPDX-License-Identifier: Apache-2.0\n# ..."
+    },
+    "triton": {
+      "repo": "triton-lang/triton",
+      "commit": "933cefce4...",
+      "license_header": "# SPDX-License-Identifier: MIT\n# ..."
+    }
+  },
   "kernels": {
     "your_kernel": {
-      "vllm_file": "path/to/kernel.py",
-      "kernel_function": "_your_kernel_fn"
+      "source": "vllm",
+      "file": "path/to/kernel.py",
+      "kernel_function": "_your_kernel_fn",
+      "helpers": ["optional_helper_fn"]
     }
   }
 }
 ```
 
-### 2. Extract from vLLM
+Each kernel specifies:
+- `source`: which source repo to fetch from
+- `file`: path within that repo
+- `kernel_function`: the `@triton.jit` function to extract
+- `helpers` (optional): additional functions to extract (placed before the kernel)
+
+### 2. Extract from Source
 
 ```bash
-python scripts/fetch_originals.py
+python scripts/fetch_originals.py your_kernel  # fetch single kernel
+python scripts/fetch_originals.py              # fetch all
 ```
 
-This creates `kernels/your_kernel/original.py` with the verbatim vLLM kernel.
+This creates `kernels/your_kernel/original.py` with the verbatim kernel and attribution header.
 
 ### 3. Create Block-Pointer Version
 

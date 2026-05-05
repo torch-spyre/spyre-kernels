@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Kernel function extracted verbatim from vLLM.
+# Kernel function extracted verbatim.
 # Source: https://github.com/vllm-project/vllm/blob/cde8d2471026/vllm/v1/attention/ops/triton_prefill_attention.py
 # Function: _fwd_kernel
 # Commit: cde8d2471026

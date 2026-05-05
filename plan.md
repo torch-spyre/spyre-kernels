@@ -7,34 +7,40 @@
 - Selected 9 kernels tractable for KTIR lowering
 - Created `kernels.json` registry with vLLM source mapping
 
-### Phase 2: Block-Pointer Conversion (9/13 kernels)
+### Phase 2: Block-Pointer Conversion (10/13 kernels)
 Converted all raw-pointer Triton kernels to block-pointer form:
 
-| Kernel | GPU Tests | CPU Tests |
-|--------|-----------|-----------|
-| RMSNorm | 98 | 2 |
-| SwiGLU | 98 | 2 |
-| Ranks | 64 | 2 |
-| Log-softmax | 190 | 2 |
-| Decode softmax+reduceV | 85 | 2 |
-| Merge attention states | 116 | 2 |
-| MRoPE | 52 | 2 |
-| Reshape/cache | 52 | 2 |
-| Prefill attention | 18 | 2 |
+| Kernel | Source | GPU Tests | CPU Tests |
+|--------|--------|-----------|-----------|
+| RMSNorm | vLLM | 98 | 2 |
+| SwiGLU | vLLM | 98 | 2 |
+| Ranks | vLLM | 64 | 2 |
+| Log-softmax | vLLM | 190 | 2 |
+| Decode softmax+reduceV | vLLM | 85 | 2 |
+| Merge attention states | vLLM | 116 | 2 |
+| MRoPE | vLLM | 52 | 2 |
+| Reshape/cache | vLLM | 52 | 2 |
+| Prefill attention | vLLM | 18 | 2 |
+| Matmul (GEMM) | Triton | 20 | 3 |
 
-**Total:** 773 GPU tests, 18 CPU tests — all passing
+**Total:** 793 GPU tests, 21 CPU tests — all passing
 
-### Phase 3: KTIR Lowering (9/13 kernels)
+### Phase 3: KTIR Lowering (10/13 kernels)
 All kernels lowered to KTIR MLIR with CPU validation:
 - Structural validation (MLIR parse)
 - Numerical validation (KTIR CPU interpreter vs NumPy reference)
+
+### Infrastructure: Multi-Source Fetch
+- Generalized `kernels.json` to support multiple source repos (vLLM, Triton)
+- Extended `fetch_originals.py` with per-kernel `source` field and `helpers` extraction
+- Enables adding kernels from any GitHub-hosted Triton codebase
 
 ---
 
 ## What's Next
 
-1. **Improve benchmarks and tests** — align with real inference workloads, improve cross-run consistency
-2. **Add missing kernels** — top-k/top-p sampling, decode attention stage 1, unified attention
+1. **Embedding lookup kernel** — table gather for token embeddings (simple but needed for end-to-end)
+2. **Top-k/top-p sampling** — final token selection step; may need simplified variant for KTIR
 3. **Full inference pass** — run end-to-end generation with converted kernels on the simulator
 4. **Spyre hardware validation** *(future)* — test on real Spyre/AIU when backend is available
-5. **Expand kernel coverage** *(future)* — port additional vLLM kernels as needed
+5. **Expand kernel coverage** *(future)* — decode attention stage 1, unified attention

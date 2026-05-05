@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Fetch Triton kernel functions from vLLM and write kernels/<name>/original.py.
+"""Fetch Triton kernel functions from upstream repos and write kernels/<name>/original.py.
 
-Reads kernels.json for the mapping, downloads each vLLM source file,
-extracts the @triton.jit kernel function via AST parsing, and writes
-(or overwrites) original.py entirely. Wrapper functions live in a
+Reads kernels.json for the mapping, downloads each source file via GitHub API,
+extracts the @triton.jit kernel function (and optional helpers) via AST parsing,
+and writes (or overwrites) original.py entirely. Wrapper functions live in a
 separate wrapper.py and are not touched by this script.
 
 Usage:
@@ -29,17 +29,17 @@ def load_registry():
         return json.load(f)
 
 
-def fetch_vllm_file(repo: str, commit: str, vllm_path: str) -> str:
+def fetch_file(repo: str, commit: str, file_path: str) -> str:
     """Download a file from GitHub using gh CLI."""
     result = subprocess.run(
-        ["gh", "api", f"repos/{repo}/contents/{vllm_path}?ref={commit}",
+        ["gh", "api", f"repos/{repo}/contents/{file_path}?ref={commit}",
          "--jq", ".content"],
         capture_output=True, text=True, check=True,
     )
     return base64.b64decode(result.stdout.strip()).decode()
 
 
-def extract_triton_kernel(source: str, func_name: str) -> str:
+def extract_triton_function(source: str, func_name: str) -> str:
     """Extract a @triton.jit function (with decorators) from Python source."""
     tree = ast.parse(source)
     lines = source.split("\n")
@@ -53,14 +53,16 @@ def extract_triton_kernel(source: str, func_name: str) -> str:
     raise ValueError(f"Function {func_name!r} not found in source")
 
 
-def make_header(vllm_path: str, func_name: str,
-                repo: str, commit: str) -> str:
-    url = f"https://github.com/{repo}/blob/{commit}/{vllm_path}"
+def make_header(file_path: str, func_name: str,
+                source_info: dict) -> str:
+    repo = source_info["repo"]
+    commit = source_info["commit"]
+    license_header = source_info["license_header"]
+    url = f"https://github.com/{repo}/blob/{commit}/{file_path}"
     return (
-        f"# SPDX-License-Identifier: Apache-2.0\n"
-        f"# SPDX-FileCopyrightText: Copyright contributors to the vLLM project\n"
+        f"{license_header}\n"
         f"#\n"
-        f"# Kernel function extracted verbatim from vLLM.\n"
+        f"# Kernel function extracted verbatim.\n"
         f"# Source: {url}\n"
         f"# Function: {func_name}\n"
         f"# Commit: {commit}\n"
@@ -78,18 +80,29 @@ IMPORTS = (
 )
 
 
-def process_kernel(kernel_name: str, info: dict, repo: str, commit: str,
+def process_kernel(kernel_name: str, info: dict, sources: dict,
                    diff_only: bool = False) -> bool:
     """Process one kernel. Returns True if content changed."""
-    vllm_path = info["vllm_file"]
+    source_name = info["source"]
+    source_info = sources[source_name]
+    file_path = info["file"]
     func_name = info["kernel_function"]
+    helpers = info.get("helpers", [])
     original_py = KERNELS_DIR / kernel_name / "original.py"
 
-    print(f"  Fetching {vllm_path} :: {func_name}")
-    source = fetch_vllm_file(repo, commit, vllm_path)
-    kernel_code = extract_triton_kernel(source, func_name)
+    repo = source_info["repo"]
+    commit = source_info["commit"]
 
-    header = make_header(vllm_path, func_name, repo, commit)
+    print(f"  Fetching {repo}:{file_path} :: {func_name}")
+    source = fetch_file(repo, commit, file_path)
+
+    parts = []
+    for helper_name in helpers:
+        parts.append(extract_triton_function(source, helper_name))
+    parts.append(extract_triton_function(source, func_name))
+    kernel_code = "\n\n\n".join(parts)
+
+    header = make_header(file_path, func_name, source_info)
     new_content = header + IMPORTS + "\n\n" + kernel_code + "\n"
 
     if original_py.exists():
@@ -113,8 +126,7 @@ def main():
     targets = [a for a in sys.argv[1:] if not a.startswith("-")]
 
     registry = load_registry()
-    repo = registry["repo"]
-    commit = registry["commit"]
+    sources = registry["sources"]
     kernels = registry["kernels"]
 
     if targets:
@@ -130,7 +142,7 @@ def main():
     for name, info in selected.items():
         print(f"[{name}]")
         try:
-            if process_kernel(name, info, repo, commit, diff_only):
+            if process_kernel(name, info, sources, diff_only):
                 changed += 1
         except Exception as e:
             print(f"  ERROR: {e}")

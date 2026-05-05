@@ -2,20 +2,21 @@
 
 ## Pipeline Status
 
-All 9 tractable kernels have completed the full conversion pipeline. 4 kernels remain unconverted.
+All 10 kernels have completed the full conversion pipeline. 3 kernels remain unconverted.
 
-| Kernel | Block-Ptr | KTIR | GPU Tests | CPU Tests |
-|--------|-----------|------|-----------|-----------|
-| `rms_norm` | Done | Done | 98 | 2 |
-| `silu_and_mul` | Done | Done | 98 | 2 |
-| `ranks` | Done | Done | 64 | 2 |
-| `log_softmax` | Done | Done | 190 | 2 |
-| `decode_softmax_reducev` | Done | Done | 85 | 2 |
-| `merge_attn_states` | Done | Done | 116 | 2 |
-| `mrope` | Done | Done | 52 | 2 |
-| `reshape_and_cache` | Done | Done | 52 | 2 |
-| `prefill_attention` | Done | Done | 18 | 2 |
-| **Total** | **9/9** | **9/9** | **773** | **18** |
+| Kernel | Source | Block-Ptr | KTIR | GPU Tests | CPU Tests |
+|--------|--------|-----------|------|-----------|-----------|
+| `rms_norm` | vLLM | Done | Done | 98 | 2 |
+| `silu_and_mul` | vLLM | Done | Done | 98 | 2 |
+| `ranks` | vLLM | Done | Done | 64 | 2 |
+| `log_softmax` | vLLM | Done | Done | 190 | 2 |
+| `decode_softmax_reducev` | vLLM | Done | Done | 85 | 2 |
+| `merge_attn_states` | vLLM | Done | Done | 116 | 2 |
+| `mrope` | vLLM | Done | Done | 52 | 2 |
+| `reshape_and_cache` | vLLM | Done | Done | 52 | 2 |
+| `prefill_attention` | vLLM | Done | Done | 18 | 2 |
+| `matmul` | Triton | Done | Done | 20 | 3 |
+| **Total** | | **10/10** | **10/10** | **793** | **21** |
 
 ---
 
@@ -58,6 +59,13 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 ### Prefill Attention
 - 2D block pointers for Q `[M,D]`, K `[D,N]`, V `[N,D]`, O `[M,D]`; K/V advance by `BLOCK_N` per iteration
 - KTIR: causal mask generated on-chip via `tensor.generate`
+
+### Matmul (GEMM)
+- 2D block pointers for A `[BLOCK_M, BLOCK_K]`, B `[BLOCK_K, BLOCK_N]`, C `[BLOCK_M, BLOCK_N]`
+- Source: Triton tutorial (not vLLM — vLLM uses cuBLAS for dense GEMMs)
+- `@triton.autotune` with full config set; `leaky_relu` activation support
+- KTIR: tiled over M dimension (4 cores × 32 rows), inner loop over K with `linalg.matmul` in f32
+- Required for linear projections (Q/K/V/O, gate/up/down) — the only missing compute primitive for full inference
 
 ---
 
@@ -102,7 +110,6 @@ All 9 tractable kernels have completed the full conversion pipeline. 4 kernels r
 | Top-k/Top-p sampling | 1057 | Iterative pivot selection, sorting — not expressible in KTIR |
 | Decode attention stage 1 | 778 | Paged KV with indirect block table indexing |
 | Unified attention | 1268 | Combined prefill+decode, complex control flow |
-| Rotary embedding (non-multi) | — | Standard RoPE; lower priority since target models use MRoPE |
 
 ---
 
