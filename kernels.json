@@ -9,6 +9,11 @@
       "repo": "triton-lang/triton",
       "commit": "933cefce4ecbb1600bac10e975d1e6fad166b587",
       "license_header": "# SPDX-License-Identifier: MIT\n# SPDX-FileCopyrightText: Copyright 2018-2020 Philippe Tillet, 2020-2022 OpenAI"
+    },
+    "liger": {
+      "repo": "linkedin/Liger-Kernel",
+      "commit": "c4b16d43f9d8f69068e6a15bd879dfc6a63b2449",
+      "license_header": "# SPDX-License-Identifier: BSD-2-Clause\n# SPDX-FileCopyrightText: Copyright 2024 LinkedIn Corporation (Liger-Kernel contributors)"
     }
   },
   "kernels": {
@@ -62,6 +67,11 @@
       "file": "python/tutorials/03-matrix-multiplication.py",
       "kernel_function": "matmul_kernel",
       "helpers": ["is_cuda", "get_cuda_autotune_config", "get_hip_autotune_config", "get_autotune_config", "leaky_relu"]
+    },
+    "embedding": {
+      "source": "liger",
+      "file": "src/liger_kernel/ops/experimental/embedding.py",
+      "kernel_function": "embedding_forward_kernel"
     }
   }
 }

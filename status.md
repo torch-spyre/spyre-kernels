@@ -2,7 +2,7 @@
 
 ## Pipeline Status
 
-All 10 kernels have completed the full conversion pipeline. 3 kernels remain unconverted.
+All 11 kernels have completed the full conversion pipeline. 3 kernels remain unconverted.
 
 | Kernel | Source | Block-Ptr | KTIR | GPU Tests | CPU Tests |
 |--------|--------|-----------|------|-----------|-----------|
@@ -16,7 +16,8 @@ All 10 kernels have completed the full conversion pipeline. 3 kernels remain unc
 | `reshape_and_cache` | vLLM | Done | Done | 52 | 2 |
 | `prefill_attention` | vLLM | Done | Done | 18 | 2 |
 | `matmul` | Triton | Done | Done | 20 | 3 |
-| **Total** | | **10/10** | **10/10** | **793** | **21** |
+| `embedding` | Liger-Kernel | Done | Done | 199 | 2 |
+| **Total** | | **11/11** | **11/11** | **992** | **23** |
 
 ---
 
@@ -66,6 +67,13 @@ All 10 kernels have completed the full conversion pipeline. 3 kernels remain unc
 - `@triton.autotune` with full config set; `leaky_relu` activation support
 - KTIR: tiled over M dimension (4 cores × 32 rows), inner loop over K with `linalg.matmul` in f32
 - Required for linear projections (Q/K/V/O, gate/up/down) — the only missing compute primitive for full inference
+
+### Embedding
+- 1D block pointer for `indices` loads; 2D block pointer for contiguous output stores
+- 2D gather of `embeddings[indices[:], :]` stays raw — each output row picks a data-dependent embedding-table row, which block pointers don't express
+- Source: Liger-Kernel (vLLM uses PyTorch `F.embedding` directly, no Triton kernel upstream)
+- KTIR: `construct_indirect_access_tile` with `ind()` gathers the full embedding-dim row per token — same pattern as ranks' scalar gather, extended to a vector
+- Required for token→hidden-state lookup at the start of the forward pass
 
 ---
 

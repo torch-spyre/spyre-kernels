@@ -26,8 +26,9 @@ Raw-pointer Triton → Block-pointer Triton → KTIR (MLIR dialect for Spyre)
 | 8 | `reshape_and_cache` | vLLM | KV cache reshape |
 | 9 | `prefill_attention` | vLLM | Prefill SDPA |
 | 10 | `matmul` | Triton | Dense matrix multiplication (GEMM) |
+| 11 | `embedding` | Liger-Kernel | Embedding table lookup |
 
-Kernels are extracted from vLLM commit [`cde8d2471026`](https://github.com/vllm-project/vllm/commit/cde8d2471026) and Triton commit [`933cefce4`](https://github.com/triton-lang/triton/commit/933cefce4ecbb1600bac10e975d1e6fad166b587).
+Kernels are extracted from vLLM commit [`cde8d2471026`](https://github.com/vllm-project/vllm/commit/cde8d2471026), Triton commit [`933cefce4`](https://github.com/triton-lang/triton/commit/933cefce4ecbb1600bac10e975d1e6fad166b587), and Liger-Kernel commit [`c4b16d43`](https://github.com/linkedin/Liger-Kernel/commit/c4b16d43f9d8f69068e6a15bd879dfc6a63b2449).
 
 ## Project Structure
 
