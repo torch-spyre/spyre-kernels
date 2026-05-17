@@ -8,7 +8,7 @@ import torch
 from ktir_cpu import KTIRInterpreter
 from kernels.mrope.wrapper import triton_mrope
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "mrope" / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "mrope" / "kernel.ktir")
 
 NUM_TOKENS = 32
 NUM_HEADS = 8

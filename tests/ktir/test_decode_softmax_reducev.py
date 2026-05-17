@@ -8,7 +8,7 @@ import torch
 from ktir_cpu import KTIRInterpreter
 from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "decode_softmax_reducev" / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "decode_softmax_reducev" / "kernel.ktir")
 
 NUM_BATCHES = 4
 NUM_HEADS = 8

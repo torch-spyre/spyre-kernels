@@ -12,7 +12,7 @@ from ktir_cpu import KTIRInterpreter
 from kernels.matmul.wrapper import matmul
 
 MLIR_PATH = str(
-    Path(__file__).resolve().parent.parent.parent / "kernels" / "matmul" / "kernel.ktir.mlir"
+    Path(__file__).resolve().parent.parent.parent / "kernels" / "matmul" / "kernel.ktir"
 )
 
 M = 128

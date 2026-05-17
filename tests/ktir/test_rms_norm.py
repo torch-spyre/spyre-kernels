@@ -14,7 +14,7 @@ from ktir_cpu import KTIRInterpreter
 from kernels.rms_norm.wrapper import rms_norm
 
 MLIR_PATH = str(
-    Path(__file__).resolve().parent.parent.parent / "kernels" / "rms_norm" / "kernel.ktir.mlir"
+    Path(__file__).resolve().parent.parent.parent / "kernels" / "rms_norm" / "kernel.ktir"
 )
 
 NUM_ROWS = 32

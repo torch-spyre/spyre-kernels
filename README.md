@@ -34,12 +34,12 @@ Kernels are extracted from vLLM commit [`cde8d2471026`](https://github.com/vllm-
 
 ```
 tritokti/
-├── kernels/                    # Kernel implementations
+├── kernels/                   # Kernel implementations
 │   ├── <name>/
 │   │   ├── original.py        # Raw-pointer Triton (from vLLM)
 │   │   ├── block_ptr.py       # Block-pointer Triton
 │   │   ├── wrapper.py         # Python launcher
-│   │   └── kernel.ktir.mlir   # KTIR output
+│   │   └── kernel.ktir        # KTIR output
 │
 ├── tests/
 │   ├── triton/                # GPU equivalence tests
@@ -249,7 +249,7 @@ def vllm_reference(x_np):
 
 def test_your_kernel_ktir():
     interp = KTIRInterpreter()
-    interp.load("kernels/your_kernel/kernel.ktir.mlir")
+    interp.load("kernels/your_kernel/kernel.ktir")
     # ... execute and compare to vLLM reference ...
 ```
 

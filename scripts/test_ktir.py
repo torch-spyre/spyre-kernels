@@ -189,7 +189,7 @@ def main():
     print("-" * 52)
 
     for name, cfg in KERNELS.items():
-        mlir_path = kernels_dir / name / "kernel.ktir.mlir"
+        mlir_path = kernels_dir / name / "kernel.ktir"
         if not mlir_path.exists():
             print(f"{name:<28} {'SKIP':<8} {'SKIP':<8} {'—':<8}")
             continue

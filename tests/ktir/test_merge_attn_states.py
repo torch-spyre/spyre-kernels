@@ -8,7 +8,7 @@ import torch
 from ktir_cpu import KTIRInterpreter
 from kernels.merge_attn_states.wrapper import merge_attn_states
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "merge_attn_states" / "kernel.ktir.mlir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "merge_attn_states" / "kernel.ktir")
 
 NUM_TOKENS = 32
 NUM_HEADS = 8
