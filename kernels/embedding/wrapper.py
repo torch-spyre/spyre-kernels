@@ -2,6 +2,7 @@ import torch
 import triton
 
 from kernels.embedding.original import embedding_forward_kernel
+from kernels.embedding.spyre import embedding_forward_kernel_spyre
 
 
 def embedding(
@@ -27,6 +28,7 @@ def embedding(
     ori_shape = indices.shape
     indices_flat = indices.view(-1)
     n_elements = indices_flat.numel()
+    vocab_size = embeddings.shape[0]
     embedding_dim = embeddings.shape[1]
 
     output = torch.empty(
@@ -36,19 +38,32 @@ def embedding(
 
     BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
     BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))
-    grid = (
-        triton.cdiv(n_elements, BLOCK_SIZE_M),
-        triton.cdiv(embedding_dim, BLOCK_SIZE_N),
-    )
 
-    kernel_fn[grid](
-        embeddings,
-        indices_flat,
-        output,
-        n_elements,
-        embedding_dim=embedding_dim,
-        BLOCK_SIZE_M=BLOCK_SIZE_M,
-        BLOCK_SIZE_N=BLOCK_SIZE_N,
-    )
+    if kernel_fn is embedding_forward_kernel_spyre:
+        grid = (min(32, triton.cdiv(n_elements, BLOCK_SIZE_M)),)
+        kernel_fn[grid](
+            embeddings,
+            indices_flat,
+            output,
+            n_elements,
+            vocab_size,
+            embedding_dim,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+        )
+    else:
+        grid = (
+            triton.cdiv(n_elements, BLOCK_SIZE_M),
+            triton.cdiv(embedding_dim, BLOCK_SIZE_N),
+        )
+        kernel_fn[grid](
+            embeddings,
+            indices_flat,
+            output,
+            n_elements,
+            embedding_dim=embedding_dim,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+        )
 
     return output.view(*ori_shape, embedding_dim)
