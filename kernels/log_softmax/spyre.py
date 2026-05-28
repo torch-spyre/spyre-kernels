@@ -5,7 +5,8 @@
 # Original: kernels/log_softmax/original.py
 #
 # Conversion from original:
-#   - Reduction loops over vocab use tl.make_tensor_descriptor
+#   - Reduction loops over vocab use 2D tl.make_tensor_descriptor [num_requests, vocab_size]
+#   - Descriptor created once at top level (no addptr as base)
 #   - Grid capped at 32 cores with explicit distribution loop over requests
 #   - Top-k gather (data-dependent indirect load) remains raw pointer
 #   - Top-k id load and output store remain raw pointer (indirect offsets)
@@ -34,20 +35,20 @@ def _topk_log_softmax_kernel_spyre(
     req_start = pid * requests_per_core
     req_end = tl.minimum(req_start + requests_per_core, num_requests)
 
-    for req_idx in range(req_start, req_end):
-        row_desc = tl.make_tensor_descriptor(
-            logits_ptr + req_idx * vocab_size,
-            shape=[vocab_size],
-            strides=[1],
-            block_shape=[BLOCK_SIZE],
-        )
+    logits_desc = tl.make_tensor_descriptor(
+        logits_ptr,
+        shape=[num_requests, vocab_size],
+        strides=[vocab_size, 1],
+        block_shape=[1, BLOCK_SIZE],
+    )
 
+    for req_idx in range(req_start, req_end):
         # Pass 1: find row max
         num_blocks = tl.cdiv(vocab_size, BLOCK_SIZE)
         max_val = float("-inf")
         for i in range(num_blocks):
-            logits = row_desc.load([i * BLOCK_SIZE])
-            valid = (i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)) < vocab_size
+            logits = logits_desc.load([req_idx, i * BLOCK_SIZE])
+            valid = (i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE))[None, :] < vocab_size
             logits = tl.where(valid, logits, float("-inf"))
             max_val = tl.max(tl.maximum(logits, max_val))
         max_val = max_val.to(tl.float32)
@@ -55,10 +56,10 @@ def _topk_log_softmax_kernel_spyre(
         # Pass 2: compute sum(exp(logit - max))
         se = 0.0
         for i in range(num_blocks):
-            logits = row_desc.load([i * BLOCK_SIZE])
+            logits = logits_desc.load([req_idx, i * BLOCK_SIZE])
             logits = logits.to(tl.float32)
             e = tl.exp(logits - max_val)
-            valid = (i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)) < vocab_size
+            valid = (i * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE))[None, :] < vocab_size
             e = tl.where(valid, e, 0.0)
             se += tl.sum(e)
         lse = tl.log(se)
