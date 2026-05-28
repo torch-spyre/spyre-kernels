@@ -1,3 +1,8 @@
+---
+name: spyre-convert
+description: "Converts a GPU-shaped Triton kernel (original.py) into a Spyre-aware kernel (spyre.py) that satisfies the three authoring invariants for IBM Spyre/AIU accelerators. Use when the user asks to convert a kernel to Spyre-aware form, port a kernel to Spyre, or produce a spyre.py file from an original.py."
+---
+
 # Spyre Kernel Conversion Skill
 
 Convert a GPU-shaped Triton kernel (`original.py`) into a Spyre-aware kernel (`spyre.py`) that satisfies the three authoring invariants for IBM Spyre/AIU accelerators.
@@ -127,6 +132,67 @@ Tensor descriptors require strides to be known when the descriptor is created. F
 
 If the original kernel has optional activation functions (like `ACTIVATION: tl.constexpr`), keep that logic but apply it to the accumulator before storing via the descriptor.
 
+### 8. Descriptor memory pattern constraints
+
+The Spyre compiler only supports specific descriptor memory patterns. Observe these rules when converting:
+
+#### Supported patterns
+
+- **Static and dynamic shapes**: Both compile-time-known shapes and runtime argument shapes work. Runtime shapes produce `memref<?x...>` with runtime bounds.
+  ```python
+  # Static shape — OK
+  desc = tl.make_tensor_descriptor(ptr, shape=[1024], strides=[1], block_shape=[BLOCK])
+  # Dynamic shape — also OK (N is a runtime kernel argument)
+  desc = tl.make_tensor_descriptor(ptr, shape=[N], strides=[1], block_shape=[BLOCK])
+  ```
+
+- **Descriptor placement**: Descriptors can be created at function top level OR inside loops/conditionals. Placing at top level is preferred (view is constructed once and reused).
+  ```python
+  # Preferred: descriptor at function top, load in loop
+  desc = tl.make_tensor_descriptor(ptr, shape=[N], strides=[1], block_shape=[BLOCK])
+  for off in range(0, N, BLOCK):
+      tile = desc.load([off])
+  ```
+
+- **Gather (2D only)**: `tl.descriptor_gather` is supported for 2D descriptors with index buffers loaded via a descriptor (not passed as tensor-typed function args).
+  ```python
+  # OK: indices loaded via descriptor, then used in gather
+  idx = idx_desc.load([offset_m])
+  result = tl.descriptor_gather(data_desc, idx, y_offset)
+  ```
+
+#### Rejected patterns — do NOT use
+
+- **`tt.addptr` result as descriptor base**: Cannot offset a pointer with arithmetic and then pass it to `tl.make_tensor_descriptor`. This means batched matmul patterns like `a_ptr + b_idx * stride_batch` as a descriptor base are NOT supported. Instead, use an extra dimension in the descriptor shape or restructure the access pattern.
+  ```python
+  # REJECTED — will fail to legalize
+  base = a_ptr + batch_idx * stride_batch
+  desc = tl.make_tensor_descriptor(base, shape=[M, K], strides=[K, 1], ...)
+  ```
+
+- **Rank-reduced loads (3D descriptor → 2D result)**: Cannot fold `tl.reshape(desc.load(...))` where the descriptor is 3D and the result is 2D. Descriptors must be 2D with 2D block shapes.
+  ```python
+  # REJECTED — 3D block shape not supported
+  desc = tl.make_tensor_descriptor(ptr, shape=[B, M, K], strides=[M*K, K, 1],
+                                   block_shape=[1, BLOCK_M, BLOCK_K])
+  tile = tl.reshape(desc.load([b, m, k]), [BLOCK_M, BLOCK_K])
+  ```
+
+- **N-D gather (rank > 2)**: `descriptor_gather` with a 3D block type is rejected. Paged-attention style N-D gather (block table driving an indirect dimension) is not yet supported.
+  ```python
+  # REJECTED — descriptor block must be a 2D tensor
+  k_desc = tl.make_tensor_descriptor(k_cache_ptr, [...], block_shape=[1, block_size, dim])
+  result = tl.descriptor_gather(k_desc, block_table, head_offset)
+  ```
+
+- **Gather with tensor-typed function argument as `x_offsets`**: The `x_offsets` for `descriptor_gather` must come from a `descriptor_load` (i.e., loaded from a `!tt.ptr<i32>` buffer), not passed as a tensor-typed kernel argument.
+  ```python
+  # REJECTED — x_offsets must come from a descriptor load, not a kernel arg
+  @triton.jit
+  def kernel(x_offsets, ...):  # x_offsets as tensor arg — NOT allowed
+      result = tl.descriptor_gather(desc, x_offsets, y_offset)
+  ```
+
 ## Output File Structure
 
 ```python
@@ -226,12 +292,16 @@ Key decisions in this conversion:
 7. [ ] Non-divisible shapes handled via `tl.cdiv` + `tl.minimum`
 8. [ ] No `tl.make_block_ptr`, no `tl.advance`
 9. [ ] No `tl.assume`, no `tl.multiple_of`
-10. [ ] Kernel produces correct output for the same inputs as original
-11. [ ] File placed at `kernels/<name>/spyre.py`
+10. [ ] No pointer arithmetic (`addptr`) feeding into descriptor base
+11. [ ] All descriptors are 2D (no 3D block shapes or rank-reduced loads)
+12. [ ] Gather indices (if used) come from descriptor loads, not kernel args
+13. [ ] Kernel produces correct output for the same inputs as original
+14. [ ] File placed at `kernels/<name>/spyre.py`
 
 ## References
 
 - Spyre fixtures (canonical examples): `msrivats/triton` repo, `third_party/spyre/test/fixtures/`
+- Memory patterns reference: `msrivats/triton` repo, `third_party/spyre/docs/patterns/memory.md`
 - Issue #13: https://github.ibm.com/Ohad-Eytan1/tritokti/issues/13
 - Flim's roadmap gist: https://gist.github.ibm.com/flim/6bc5edf67ed8b509d3e51abeb77a08d0
 - Call for Spyre kernels: https://github.ibm.com/msrivats/triton/issues/79

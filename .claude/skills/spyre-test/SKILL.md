@@ -1,3 +1,8 @@
+---
+name: spyre-test
+description: "Writes numerical equivalence tests for a Spyre-aware Triton kernel by comparing its output against the original kernel using random inputs. Use when the user asks to write tests, add tests, or create a test file for a Spyre kernel (spyre.py)."
+---
+
 # Spyre Kernel Test Skill
 
 Write numerical equivalence tests for a Spyre-aware Triton kernel by comparing its output against the original kernel using random inputs.

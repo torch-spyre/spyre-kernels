@@ -1,3 +1,8 @@
+---
+name: spyre-review
+description: "Reviews a Spyre-aware Triton kernel for compliance with the three authoring invariants and correct use of the tl.make_tensor_descriptor API. Use when the user asks to review, verify, validate, or check a Spyre kernel for compliance, or when a spyre.py file has just been created and needs verification."
+---
+
 # Spyre Kernel Review Skill
 
 Review a Spyre-aware Triton kernel for compliance with the three authoring invariants and correct use of the `tl.make_tensor_descriptor` API.
@@ -93,7 +98,46 @@ Check that:
 - Data-dependent/indirect loads: offset comes from a loaded index value
 - Scalar stores: `tl.store(ptr + idx, scalar_value)`
 
-### Step 5: Correctness check against original
+### Step 5: Check descriptor memory pattern constraints
+
+Verify the kernel does not use any rejected Spyre compiler patterns:
+
+1. **No `addptr` as descriptor base**: The base pointer passed to `tl.make_tensor_descriptor` must be a raw pointer argument — NOT the result of pointer arithmetic (e.g., `ptr + offset * stride`). This rejects batched patterns that offset the base per batch.
+   ```python
+   # FAIL — addptr result as descriptor base
+   base = a_ptr + batch_idx * stride_batch
+   desc = tl.make_tensor_descriptor(base, ...)
+   ```
+
+2. **Descriptors must be 2D (rank ≤ 2)**: All descriptor `block_shape` arrays must have exactly 2 elements. 3D descriptors and rank-reduced loads (`tl.reshape(desc.load(...))` from 3D → 2D) are rejected.
+   ```python
+   # FAIL — 3D block shape
+   desc = tl.make_tensor_descriptor(ptr, shape=[B, M, K], block_shape=[1, BM, BK])
+   ```
+
+3. **Gather requires 2D descriptors**: `tl.descriptor_gather` only works with 2D block types. N-D gather (e.g., paged-attention style with 3D blocks) is rejected.
+
+4. **Gather `x_offsets` must come from a descriptor load**: If the kernel uses `tl.descriptor_gather`, the index tensor (`x_offsets`) must be loaded from memory via another descriptor — it cannot be a tensor-typed kernel argument.
+   ```python
+   # FAIL — x_offsets is a kernel argument, not loaded via descriptor
+   def kernel(x_offsets, ...):
+       result = tl.descriptor_gather(desc, x_offsets, y_offset)
+   
+   # PASS — x_offsets loaded from a pointer via descriptor
+   idx_desc = tl.make_tensor_descriptor(idx_ptr, ...)
+   x_offsets = idx_desc.load([offset])
+   result = tl.descriptor_gather(desc, x_offsets, y_offset)
+   ```
+
+5. **Descriptor placement is flexible**: Descriptors at function top level (preferred), inside loops, or inside conditionals are all valid. Note: top-level placement constructs the view once and reuses it, which is more efficient.
+
+**Red flags:**
+- Any arithmetic on a pointer before it becomes a descriptor base
+- `shape=` or `block_shape=` with 3 or more dimensions
+- `tl.descriptor_gather` with a kernel argument as indices
+- `tl.reshape` applied to a descriptor load result
+
+### Step 6: Correctness check against original
 
 Compare the converted kernel against `original.py`:
 1. Same mathematical operation is computed
@@ -103,7 +147,7 @@ Compare the converted kernel against `original.py`:
 5. No accidentally dropped operations (activations, clamping, normalization steps)
 6. All input/output tensors from the original are handled
 
-### Step 6: Check for removed patterns
+### Step 7: Check for removed patterns
 
 Verify these GPU-specific patterns are absent:
 - [ ] No `@triton.autotune` decorator
@@ -143,6 +187,13 @@ Verify these GPU-specific patterns are absent:
 - Raw pointer loads: <count> (justified: <yes/no for each>)
 - Issues: <any>
 
+### Descriptor memory patterns
+**Status:** PASS / FAIL
+- Addptr as base: <present/absent>
+- Descriptor rank: <all 2D / violations found>
+- Gather usage: <correct / violations>
+- Issues: <any>
+
 ### Correctness vs original
 **Status:** PASS / FAIL
 - <any discrepancies>
@@ -155,4 +206,5 @@ Verify these GPU-specific patterns are absent:
 
 - Three invariants defined in: https://gist.github.ibm.com/flim/6bc5edf67ed8b509d3e51abeb77a08d0
 - Canonical Spyre fixtures: `msrivats/triton` repo, `third_party/spyre/test/fixtures/`
+- Memory patterns reference: `msrivats/triton` repo, `third_party/spyre/docs/patterns/memory.md`
 - Conversion skill: `skills/spyre-convert.md`
