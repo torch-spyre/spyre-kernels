@@ -64,6 +64,6 @@ venv.bak/
 *.swp
 *.swo
 *~
-.claude/
+.claude/settings.local.json
 
 .mcp.json
