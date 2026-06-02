@@ -49,6 +49,8 @@ Sum all tiles that are alive simultaneously (loaded tiles in the same loop body 
 
 Flag if the formula could exceed 2MB for plausible constexpr values (e.g., BLOCK_M=128, BLOCK_N=128, BLOCK_K=64).
 
+**Critical check**: Verify that tile constexprs are independent of problem dimensions. If a tile size is derived from a problem size (e.g., `BLOCK = next_power_of_2(N)` set in the wrapper to cover an entire dimension without looping), scratchpad usage grows with the problem and the invariant does NOT hold — even if the byte count is small for typical values. Flag this as FAIL and recommend introducing a fixed tile size with a loop over the dimension.
+
 ### Step 2: Check Invariant 2 — Grid fits 32 cores
 
 Verify:

@@ -35,6 +35,8 @@ Every Spyre-aware kernel MUST satisfy these three invariants:
 
 Each Spyre core has **2MB of scratchpad**. The sum of concurrently-live tile bytes (all loaded tiles + accumulators + partial outputs alive at the same time) must be ≤ 2MB. Tile sizes are passed as `tl.constexpr` args; the kernel assumes they are valid.
 
+**Critical**: Tile constexprs must be independent of problem dimensions. If a tile size is derived from a problem size (e.g., `BLOCK = next_power_of_2(N)` to cover an entire dimension in one load), scratchpad usage grows with the problem and the invariant does not hold. The fix is to introduce a fixed tile size and loop over the dimension in chunks.
+
 ### Invariant 2 — Grid fits 32 cores
 
 Total cooperating program count ≤ 32. If more work exists than 32 programs, express it as an **explicit outer loop inside the kernel** (a distribution loop), not by launching more programs. Use `tl.num_programs(axis)` to query the grid size and compute per-core work bounds:
@@ -116,7 +118,11 @@ Spyre picks constexprs explicitly — autotune is not supported. Remove the deco
 
 Remove `tl.assume`, `tl.multiple_of`, and any CUDA/HIP-specific config functions.
 
-### 5. Use descriptors for all memory accesses — no raw pointer arithmetic
+### 5. Preserve the kernel signature when possible
+
+The spyre kernel should have the same signature as the original so the wrapper can call both with minimal branching. When the spyre kernel needs values not in the original signature (e.g., problem dimensions that the original derived from the grid), first try to recover them from existing args or grid dimensions (e.g., `tl.num_programs` on phantom axes). Only add new parameters as a last resort, and update the wrapper to handle both calling conventions.
+
+### 6. Use descriptors for all memory accesses — no raw pointer arithmetic
 
 Raw pointer `tl.load`/`tl.store` with `tt.addptr` are legacy TTIR operations. The Spyre backend's `LowerDescriptorMemory` pass only lowers tensor descriptor operations (`desc.load`/`desc.store`/`desc.gather`/`desc.scatter`) to KTIR — raw `tt.load`/`tt.store` have **no KTIR lowering path**.
 
@@ -131,6 +137,8 @@ Raw pointer `tl.load`/`tl.store` with `tt.addptr` are legacy TTIR operations. Th
 - **GAP: Rank-reduced loads/stores** — A descriptor with leading singleton block dims (e.g. `block_shape=[1, 1, BLOCK]`) produces a result with those extra dims. Reshaping to drop them triggers `triton-combine` to fold it into a rank-reduced `tt.descriptor_load`, which `LowerDescriptorMemory` cannot handle (access tile rank ≠ result rank). Tracked: `msrivats/triton#99`. Until fixed, write the reshape explicitly and mark with `# [gap] rank-reduced load — msrivats/triton#99`.
 
 **When gaps apply**: Write the kernel in descriptor form anyway (the target form for when gaps are resolved), and annotate each gap site with a comment. This makes it clear what will work once the compiler catches up, and avoids rewriting later.
+
+**Utilize the scratchpad**: Each Spyre core has 2MB of scratchpad. If the distribution loop processes one work item per iteration with a small accumulator, most of that scratchpad is wasted. Batch multiple work items per iteration — widen the accumulator and load larger tiles — so that each core's scratchpad is filled with useful live data. This improves compute density and amortizes descriptor overhead.
 
 ### 6. Strides must be expressible at descriptor creation
 
