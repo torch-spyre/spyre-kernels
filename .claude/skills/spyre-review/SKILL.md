@@ -51,6 +51,48 @@ Flag if the formula could exceed 2MB for plausible constexpr values (e.g., BLOCK
 
 **Critical check**: Verify that tile constexprs are independent of problem dimensions. If a tile size is derived from a problem size (e.g., `BLOCK = next_power_of_2(N)` set in the wrapper to cover an entire dimension without looping), scratchpad usage grows with the problem and the invariant does NOT hold — even if the byte count is small for typical values. Flag this as FAIL and recommend introducing a fixed tile size with a loop over the dimension.
 
+### Step 1b: Scratchpad utilization — detect under-use
+
+After verifying the hard constraint (tiles fit), assess whether the kernel is **wasting scratchpad capacity** by processing less data per iteration than it could. Low utilization means the kernel is leaving performance on the table — the scratchpad exists to hold working data, and using 1 KB of 2 MB means the hardware's parallelism is underexploited.
+
+**Procedure:**
+
+1. Compute the peak live bytes (from Step 1). Compare against the 2 MB budget. If utilization is below ~10% (i.e., < 200 KB), flag for investigation.
+
+2. Identify which loop axis processes **one element at a time** when it could batch multiple elements per iteration. The telltale pattern:
+   ```python
+   for work_idx in range(start, end):
+       # ... processes exactly ONE item (one batch, one head, one token) per iteration
+       acc = tl.zeros([BLOCK_SIZE], dtype=tl.float32)  # 1D accumulator
+   ```
+
+3. Ask: **could the kernel vectorize across that axis?** The answer is YES when:
+   - The reduction (inner loop) is **independent** across items on that axis — i.e., each item has its own accumulator, max, sum, etc., with no cross-item dependency.
+   - The scratchpad can fit `BLOCK_ITEMS × BLOCK_SIZE` tiles without exceeding 2 MB.
+   - Example: a per-element reduction (softmax, norm, etc.) where each work item's state is fully independent of others on the batched axis.
+
+4. If batching is possible, compute a recommended `BLOCK_ITEMS` value:
+   ```
+   available = 2 MB (or conservative 1 MB)
+   per_item_bytes = (acc_tile + loaded_tiles) * dtype_bytes
+   BLOCK_ITEMS = floor(available / per_item_bytes)
+   ```
+   Clamp to a power of 2 and a reasonable maximum (e.g., 16–64).
+
+5. Note side benefits of batching:
+   - Amortizes loop overhead and descriptor setup across multiple items
+   - Increases compute density on inner multiply-add operations
+   - May escape the 16-byte descriptor minimum: if a scalar load becomes a `[BLOCK_ITEMS]` vector load, `BLOCK_ITEMS × dtype_bytes ≥ 16` satisfies the constraint naturally (e.g., `BLOCK_ITEMS=4` × 4 bytes = 16 bytes)
+
+**Report this as WARN (not FAIL)** — scratchpad under-use is a performance issue, not a correctness/compliance issue. Include specific recommendations for which axis to batch and what `BLOCK_ITEMS` value to use.
+
+**Caveat — when batching across an axis is NOT possible:**
+- The items on that axis have **different control flow** (e.g., different sequence lengths determine which iterations are active) — batching requires either uniform control flow or masking
+- The axis involves **cross-item dependencies** (e.g., a reduction that accumulates across the batched dimension)
+- Layout constraints make multi-item loads non-contiguous in memory
+
+In such cases, note the limitation in the report but still flag the under-use as a known performance gap.
+
 ### Step 2: Check Invariant 2 — Grid fits 32 cores
 
 Verify:
@@ -168,6 +210,15 @@ Verify these GPU-specific patterns are absent:
 - Concurrently-live tiles: <list with sizes>
 - Total at peak: <formula> = <value for typical constexprs>
 - Verdict: <explanation>
+
+### Scratchpad utilization
+**Status:** OK / WARN
+- Peak live bytes: <value>
+- Utilization: <peak / 2MB as percentage>
+- Batchable axis: <axis name or "none">
+- Recommended BLOCK_ITEMS: <value or N/A>
+- Side benefits: <e.g., escapes 16-byte minimum>
+- Caveats: <e.g., divergent control flow requires masking>
 
 ### Invariant 2 — Grid fits 32 cores
 **Status:** PASS / FAIL
