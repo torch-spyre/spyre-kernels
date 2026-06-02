@@ -116,13 +116,21 @@ Spyre picks constexprs explicitly — autotune is not supported. Remove the deco
 
 Remove `tl.assume`, `tl.multiple_of`, and any CUDA/HIP-specific config functions.
 
-### 5. Keep scalar/data-dependent loads as raw pointers
+### 5. Use descriptors for all memory accesses — no raw pointer arithmetic
 
-If a load is:
-- A single scalar element (e.g., `tl.load(token_ids_ptr + req_idx)`)
-- Data-dependent / indirect (the offset comes from a runtime-loaded index)
+Raw pointer `tl.load`/`tl.store` with `tt.addptr` are legacy TTIR operations. The Spyre backend's `LowerDescriptorMemory` pass only lowers tensor descriptor operations (`desc.load`/`desc.store`/`desc.gather`/`desc.scatter`) to KTIR — raw `tt.load`/`tt.store` have **no KTIR lowering path**.
 
-Then it **stays as a raw pointer load** — tensor descriptors cannot express indirect access (use `desc.gather`/`desc.scatter` only if the indirect pattern maps cleanly to those APIs).
+**Goal**: Express every memory access via `tl.make_tensor_descriptor`. Use higher-rank descriptors (3D, 4D) matching the tensor's actual rank to avoid `addptr` in the base pointer. Pass strides from the kernel signature directly into the descriptor.
+
+**Data-dependent / indirect accesses**: Use `desc.gather`/`desc.scatter` where the indirect pattern maps to those APIs (index tensor supplies one dimension's coordinate). If the pattern cannot be expressed structurally, it falls outside KTIR's expressiveness entirely — write the closest descriptor form and annotate with a gap comment.
+
+**Known compiler gaps** (document these in the kernel header when encountered):
+
+- **GAP: ≥16 bytes in last dimension** — `tl.make_tensor_descriptor` requires ≥16 bytes in the last dimension (a Triton frontend constraint). Scalar loads (single i32/f32) with `block_shape=[1]` or `block_shape=[..., 1]` are rejected at trace time. Write the descriptor form anyway and annotate with `# [gap] scalar descriptor — requires ≥16 bytes in last dim`.
+
+- **GAP: Rank-reduced loads/stores** — A descriptor with leading singleton block dims (e.g. `block_shape=[1, 1, BLOCK]`) produces a result with those extra dims. Reshaping to drop them triggers `triton-combine` to fold it into a rank-reduced `tt.descriptor_load`, which `LowerDescriptorMemory` cannot handle (access tile rank ≠ result rank). Tracked: `msrivats/triton#99`. Until fixed, write the reshape explicitly and mark with `# [gap] rank-reduced load — msrivats/triton#99`.
+
+**When gaps apply**: Write the kernel in descriptor form anyway (the target form for when gaps are resolved), and annotate each gap site with a comment. This makes it clear what will work once the compiler catches up, and avoids rewriting later.
 
 ### 6. Strides must be expressible at descriptor creation
 
@@ -170,12 +178,12 @@ The Spyre compiler only supports specific descriptor memory patterns. Observe th
   desc = tl.make_tensor_descriptor(base, shape=[M, K], strides=[K, 1], ...)
   ```
 
-- **Rank-reduced loads (3D descriptor → 2D result)**: Cannot fold `tl.reshape(desc.load(...))` where the descriptor is 3D and the result is 2D. Descriptors must be 2D with 2D block shapes.
+- **Rank-reduced loads (ND descriptor → lower-rank result)**: Loading from an ND descriptor and reshaping to drop leading singleton dims triggers `triton-combine` to fold the reshape into a rank-reduced `tt.descriptor_load`. `LowerDescriptorMemory` cannot handle the rank mismatch between the access tile and the result type. Tracked: `msrivats/triton#99`. Write the reshape explicitly and annotate as a gap.
   ```python
-  # REJECTED — 3D block shape not supported
+  # [gap] rank-reduced load — msrivats/triton#99
   desc = tl.make_tensor_descriptor(ptr, shape=[B, M, K], strides=[M*K, K, 1],
                                    block_shape=[1, BLOCK_M, BLOCK_K])
-  tile = tl.reshape(desc.load([b, m, k]), [BLOCK_M, BLOCK_K])
+  tile = desc.load([b, m, k]).reshape([BLOCK_M, BLOCK_K])
   ```
 
 - **N-D gather (rank > 2)**: `descriptor_gather` with a 3D block type is rejected. Paged-attention style N-D gather (block table driving an indirect dimension) is not yet supported.
@@ -283,8 +291,8 @@ Key decisions in this conversion:
 
 ## Checklist Before Finishing
 
-1. [ ] All `tl.load`/`tl.store` with pointer arithmetic → descriptor `.load()`/`.store()`
-2. [ ] Exception: scalar/indirect loads stay raw
+1. [ ] ALL memory accesses use descriptors — no raw `tl.load`/`tl.store` anywhere
+2. [ ] Gap sites annotated: scalar descriptors with `# [gap] scalar descriptor`, rank-reduced with `# [gap] rank-reduced load/store — msrivats/triton#99`
 3. [ ] `@triton.autotune` removed
 4. [ ] Grid ≤ 32 with distribution loop using `tl.num_programs()`
 5. [ ] All problem sizes are runtime args (no `tl.constexpr` on M, N, K, etc.)
@@ -293,7 +301,7 @@ Key decisions in this conversion:
 8. [ ] No `tl.make_block_ptr`, no `tl.advance`
 9. [ ] No `tl.assume`, no `tl.multiple_of`
 10. [ ] No pointer arithmetic (`addptr`) feeding into descriptor base
-11. [ ] All descriptors are 2D (no 3D block shapes or rank-reduced loads)
+11. [ ] Descriptors may be any rank (1D–4D); rank-reduced loads/stores are annotated as gap (msrivats/triton#99)
 12. [ ] Gather indices (if used) come from descriptor loads, not kernel args
 13. [ ] Kernel produces correct output for the same inputs as original
 14. [ ] File placed at `kernels/<name>/spyre.py`

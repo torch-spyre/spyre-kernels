@@ -93,10 +93,7 @@ Check that:
 6. Loads/stores use offset expressions that are multiples of block dimensions: `[i * BLOCK_M, j * BLOCK_N]`
 7. No `tl.advance` calls (block_ptr pattern, not descriptor pattern)
 
-**Acceptable raw pointer usage:**
-- Single scalar loads: `tl.load(ptr + idx)` for one element
-- Data-dependent/indirect loads: offset comes from a loaded index value
-- Scalar stores: `tl.store(ptr + idx, scalar_value)`
+**No raw pointer usage is acceptable.** All accesses must use descriptors. When a descriptor hits a known compiler gap (≥16-byte last-dim minimum, rank-reduced loads), write the descriptor form anyway and annotate with the relevant gap comment.
 
 ### Step 5: Check descriptor memory pattern constraints
 
@@ -109,10 +106,11 @@ Verify the kernel does not use any rejected Spyre compiler patterns:
    desc = tl.make_tensor_descriptor(base, ...)
    ```
 
-2. **Descriptors must be 2D (rank ≤ 2)**: All descriptor `block_shape` arrays must have exactly 2 elements. 3D descriptors and rank-reduced loads (`tl.reshape(desc.load(...))` from 3D → 2D) are rejected.
+2. **Rank-reduced loads/stores are a known gap**: Descriptors may be any rank (1D–4D), but loading from an ND descriptor and reshaping to drop leading singleton dims triggers a rank-reduced `tt.descriptor_load` that `LowerDescriptorMemory` cannot handle. Tracked: `msrivats/triton#99`. The kernel should write the reshape explicitly and annotate with `# [gap] rank-reduced load — msrivats/triton#99`. This is NOT a compliance failure — it is the target form pending compiler support.
    ```python
-   # FAIL — 3D block shape
+   # [gap] rank-reduced load — msrivats/triton#99
    desc = tl.make_tensor_descriptor(ptr, shape=[B, M, K], block_shape=[1, BM, BK])
+   tile = desc.load([b, m, k]).reshape([BM, BK])
    ```
 
 3. **Gather requires 2D descriptors**: `tl.descriptor_gather` only works with 2D block types. N-D gather (e.g., paged-attention style with 3D blocks) is rejected.
@@ -133,9 +131,9 @@ Verify the kernel does not use any rejected Spyre compiler patterns:
 
 **Red flags:**
 - Any arithmetic on a pointer before it becomes a descriptor base
-- `shape=` or `block_shape=` with 3 or more dimensions
+- Any raw `tl.load`/`tl.store` without a gap annotation
 - `tl.descriptor_gather` with a kernel argument as indices
-- `tl.reshape` applied to a descriptor load result
+- `tl.reshape` applied to a descriptor load result without a gap annotation
 
 ### Step 6: Correctness check against original
 
