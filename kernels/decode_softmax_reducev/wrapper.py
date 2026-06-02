@@ -11,6 +11,7 @@ def decode_softmax_reducev(
     num_kv_splits: int,
     kernel_fn=_fwd_kernel_stage2,
     tile_size_dv: int = 64,
+    block_h: int = 8,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     batch, heads, _splits, lv_plus_1 = mid_o.shape
     Lv = lv_plus_1 - 1
@@ -20,7 +21,8 @@ def decode_softmax_reducev(
     lse = torch.empty(batch, heads, device=mid_o.device, dtype=torch.float32)
 
     if kernel_fn is _fwd_kernel_stage2_spyre:
-        num_cores = min(32, batch * heads)
+        head_tiles = triton.cdiv(heads, block_h)
+        num_cores = min(32, batch * head_tiles)
         grid = (num_cores,)
         kernel_fn[grid](
             mid_o,
@@ -37,6 +39,7 @@ def decode_softmax_reducev(
             heads,
             NUM_KV_SPLITS=num_kv_splits,
             BLOCK_SIZE=tile_size_dv,
+            BLOCK_H=block_h,
             Lv=Lv,
         )
     else:
