@@ -8,10 +8,8 @@
 #   - Grid capped at 32 cores; (batch, heads) work distributed via loop
 #   - num_batches and num_heads added as runtime args (original used grid dims)
 #   - All memory access uses tl.make_tensor_descriptor (no raw pointer loads)
-#   - V tiles loaded via 4D descriptor over Mid_O with block_shape [1,1,1,BLOCK_DV]
-#   - LSE scalars loaded via 4D descriptor with block_shape [1,1,1,1]
-#   - Output V stored via 3D descriptor; output LSE via 2D descriptor
-#   - B_Seqlen loaded via 1D descriptor
+#   - BLOCK_DV replaced with fixed BLOCK_SIZE; value dim tiled with inner loop
+#   - Split reduction recomputed per d-tile (weights are scalar, independent of d)
 #
 # Known gaps (backend fixes required before this compiles on Spyre):
 #
@@ -22,8 +20,8 @@
 #     These are rejected at trace time by the Triton frontend.
 #
 #   GAP 2 — rank-reduced loads/stores (msrivats/triton#99):
-#     mid_v_desc.load produces tensor<1x1x1xBLOCK_DV>; acc is [1,1,1,BLOCK_DV]
-#     to avoid rank mismatch. Stores reshape back to match descriptor block_shape.
+#     Descriptor loads with leading singleton dims produce ND results that
+#     must be reshaped for use with lower-rank accumulators/stores.
 #     LowerDescriptorMemory does not yet handle rank-reduced descriptor ops.
 
 import triton
@@ -45,7 +43,7 @@ def _fwd_kernel_stage2_spyre(
     num_batches,
     num_heads,
     NUM_KV_SPLITS: tl.constexpr,
-    BLOCK_DV: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
     Lv: tl.constexpr,
 ):
     """Online softmax merge of partial attention outputs across KV splits."""
@@ -65,7 +63,7 @@ def _fwd_kernel_stage2_spyre(
         Mid_O,
         shape=[num_batches, num_heads, NUM_KV_SPLITS, Lv],
         strides=[stride_mid_ob, stride_mid_oh, stride_mid_os, 1],
-        block_shape=[1, 1, 1, BLOCK_DV],
+        block_shape=[1, 1, 1, BLOCK_SIZE],
     )
     # [gap] scalar descriptor — requires ≥16 bytes in last dim
     # [gap] rank-reduced load — msrivats/triton#99
@@ -81,7 +79,7 @@ def _fwd_kernel_stage2_spyre(
         o,
         shape=[num_batches, num_heads, Lv],
         strides=[stride_obs, stride_oh, 1],
-        block_shape=[1, 1, BLOCK_DV],
+        block_shape=[1, 1, BLOCK_SIZE],
     )
     # [gap] scalar descriptor — requires ≥16 bytes in last dim
     # [gap] rank-reduced store — msrivats/triton#99
@@ -91,6 +89,8 @@ def _fwd_kernel_stage2_spyre(
         strides=[stride_lse_bs, 1],
         block_shape=[1, 1],
     )
+
+    d_tiles = tl.cdiv(Lv, BLOCK_SIZE)
 
     total_work = num_batches * num_heads
     work_per_core = tl.cdiv(total_work, num_cores)
@@ -104,34 +104,36 @@ def _fwd_kernel_stage2_spyre(
         # [gap] scalar descriptor — requires ≥16 bytes in last dim
         cur_batch_seq_len = seqlen_desc.load([cur_batch])
 
-        e_sum = 0.0
-        e_max = -float("inf")
-        acc = tl.zeros([1, 1, 1, BLOCK_DV], dtype=tl.float32)
+        for d in range(d_tiles):
+            e_sum = 0.0
+            e_max = -float("inf")
+            acc = tl.zeros([1, 1, 1, BLOCK_SIZE], dtype=tl.float32)
 
-        for split_kv_id in range(0, NUM_KV_SPLITS):
-            kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
-            split_kv_start = kv_len_per_split * split_kv_id
-            split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
+            for split_kv_id in range(0, NUM_KV_SPLITS):
+                kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
+                split_kv_start = kv_len_per_split * split_kv_id
+                split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
-            if split_kv_end > split_kv_start:
-                # [gap] rank-reduced load — msrivats/triton#99
-                tv = mid_v_desc.load([cur_batch, cur_head, split_kv_id, 0])
-                # [gap] scalar descriptor — requires ≥16 bytes in last dim
-                # [gap] rank-reduced load — msrivats/triton#99
-                tlogic = mid_lse_desc.load([cur_batch, cur_head, split_kv_id, Lv])
-                n_e_max = tl.maximum(tlogic, e_max)
+                if split_kv_end > split_kv_start:
+                    # [gap] rank-reduced load — msrivats/triton#99
+                    tv = mid_v_desc.load([cur_batch, cur_head, split_kv_id, d * BLOCK_SIZE])
+                    # [gap] scalar descriptor — requires ≥16 bytes in last dim
+                    # [gap] rank-reduced load — msrivats/triton#99
+                    tlogic = mid_lse_desc.load([cur_batch, cur_head, split_kv_id, Lv])
+                    n_e_max = tl.maximum(tlogic, e_max)
 
-                old_scale = tl.exp(e_max - n_e_max)
-                acc *= old_scale
-                exp_logic = tl.exp(tlogic - n_e_max)
-                acc += exp_logic * tv
+                    old_scale = tl.exp(e_max - n_e_max)
+                    acc *= old_scale
+                    exp_logic = tl.exp(tlogic - n_e_max)
+                    acc += exp_logic * tv
 
-                e_sum = e_sum * old_scale + exp_logic
-                e_max = n_e_max
+                    e_sum = e_sum * old_scale + exp_logic
+                    e_max = n_e_max
 
-        # [gap] rank-reduced store — msrivats/triton#99
-        result = (acc / e_sum).reshape([1, 1, BLOCK_DV])
-        o_desc.store([cur_batch, cur_head, 0], result)
+            # [gap] rank-reduced store — msrivats/triton#99
+            result = (acc / e_sum).reshape([1, 1, BLOCK_SIZE])
+            o_desc.store([cur_batch, cur_head, d * BLOCK_SIZE], result)
+
         lse_val = e_max + tl.log(e_sum)
         # [gap] scalar descriptor — requires ≥16 bytes in last dim
         # [gap] rank-reduced store — msrivats/triton#99
