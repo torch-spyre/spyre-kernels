@@ -3,6 +3,7 @@ import math
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.prefill_attention.original import _fwd_kernel
 
 RCP_LN2 = 1.0 / math.log(2.0)
@@ -34,6 +35,14 @@ def context_attention_fwd(
     grid = (batch, head, triton.cdiv(max_input_len, BLOCK))
     num_warps = 4 if Lk <= 64 else 8
 
+    extra = {}
+    if "num_q_heads" in kernel_fn.arg_names:
+        ensure_triton_allocator()
+        extra = {
+            "num_q_heads": q.shape[1],
+            "num_kv_heads": k.shape[1],
+        }
+
     kernel_fn[grid](
         q, k, v, sm_scale,
         b_start_loc, b_seq_len, o,
@@ -41,6 +50,7 @@ def context_attention_fwd(
         k.stride(0), k.stride(1),
         v.stride(0), v.stride(1),
         o.stride(0), o.stride(1),
+        **extra,
         kv_group_num=kv_group_num,
         BLOCK_M=BLOCK,
         BLOCK_DMODEL=triton.next_power_of_2(Lk),

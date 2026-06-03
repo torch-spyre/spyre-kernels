@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.matmul.original import matmul_kernel
 
 
@@ -10,6 +11,7 @@ def matmul(
 ) -> torch.Tensor:
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
     assert a.is_contiguous(), "Matrix A must be contiguous"
+    ensure_triton_allocator()
     M, K = a.shape
     K, N = b.shape
     c = torch.empty((M, N), device=a.device, dtype=torch.float16)

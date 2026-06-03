@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of _rms_norm_kernel.
+# Tensor-descriptor conversion of _rms_norm_kernel.
 # Original: vllm/model_executor/layers/batch_invariant.py
 #
 # Changes from original:
-#   - All tl.load(ptr + offset, mask=...) replaced with
-#     tl.load(block_ptr, boundary_check=...)
-#   - All tl.store(ptr + offset, val, mask=...) replaced with
-#     tl.store(block_ptr, val, boundary_check=...)
-#   - Block pointers created via tl.make_block_ptr and advanced via tl.advance
-#   - The "other=1.0" default for weight loads is handled by padding_option="one"
+#   - tl.load/tl.store with pointer arithmetic + masks replaced with
+#     tensor descriptors (tl.make_tensor_descriptor).
+#   - Tensor descriptors require >= 2 dimensions. Input/output are
+#     described as the full (n_rows, n_cols) tensor; weight is described
+#     as a (1, n_cols) tensor.
+#   - tl.advance is replaced by recomputing the column offset each iter.
+#   - Out-of-bounds is handled by descriptor padding_option="zero" (default).
 
 import torch
 import triton
@@ -24,93 +25,58 @@ def _rms_norm_kernel_block_ptr(
     output_ptr,
     input_row_stride,
     output_row_stride,
+    n_rows,
     n_cols,
     eps,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    RMS Norm with block pointers.
+    RMS Norm with tensor descriptors.
     y = x / sqrt(mean(x^2) + eps) * weight
 
-    Each program handles one row. We create 2D block pointers into the
-    [n_rows, n_cols] tensor and fix the row dimension to a block of size 1,
-    sliding the column dimension in steps of BLOCK_SIZE.
-
-    Note: We use 1D block pointers into each row. The row offset is computed
-    from program_id and baked into the base pointer, then we have a 1D
-    block pointer over columns.
+    Each program handles one row.
     """
-    row_idx = tl.program_id(0).to(tl.int64)
+    row_idx = tl.program_id(0).to(tl.int32)
 
-    # --- Block pointers for input row, output row, and weight vector ---
-    # Input: 1D view into row `row_idx`, shape=(n_cols,), stride=(1,)
-    input_block_ptr = tl.make_block_ptr(
-        base=input_ptr + row_idx * input_row_stride,
-        shape=(n_cols,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
+    in_desc = tl.make_tensor_descriptor(
+        input_ptr,
+        shape=[n_rows, n_cols],
+        strides=[input_row_stride, 1],
+        block_shape=[1, BLOCK_SIZE],
+    )
+    out_desc = tl.make_tensor_descriptor(
+        output_ptr,
+        shape=[n_rows, n_cols],
+        strides=[output_row_stride, 1],
+        block_shape=[1, BLOCK_SIZE],
+    )
+    w_desc = tl.make_tensor_descriptor(
+        weight_ptr,
+        shape=[1, n_cols],
+        strides=[n_cols, 1],
+        block_shape=[1, BLOCK_SIZE],
     )
 
     # Step 1: Compute sum of squares in float32
     sum_sq = tl.zeros([1], dtype=tl.float32)
     for col_offset in range(0, n_cols, BLOCK_SIZE):
-        vals = tl.load(input_block_ptr, boundary_check=(0,), padding_option="zero")
+        vals = in_desc.load([row_idx, col_offset])
         vals_f32 = vals.to(tl.float32)
         sum_sq += tl.sum(vals_f32 * vals_f32)
-        input_block_ptr = tl.advance(input_block_ptr, (BLOCK_SIZE,))
 
     # Step 2: Compute RMS
     mean_sq = sum_sq / n_cols
     rms = tl.sqrt(mean_sq + eps)
     inv_rms = 1.0 / rms
 
-    # Reset input block pointer to start of row for the second pass
-    input_block_ptr = tl.make_block_ptr(
-        base=input_ptr + row_idx * input_row_stride,
-        shape=(n_cols,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
-    )
-
-    # Weight: 1D, shape=(n_cols,), stride=(1,)
-    weight_block_ptr = tl.make_block_ptr(
-        base=weight_ptr,
-        shape=(n_cols,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
-    )
-
-    # Output: 1D view into row `row_idx`
-    output_block_ptr = tl.make_block_ptr(
-        base=output_ptr + row_idx * output_row_stride,
-        shape=(n_cols,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
-    )
-
     # Step 3: Normalize and apply weight
     for col_offset in range(0, n_cols, BLOCK_SIZE):
-        vals = tl.load(input_block_ptr, boundary_check=(0,), padding_option="zero")
-        # Original used other=1.0 for OOB weights, but OOB input vals are 0.0
-        # and the store has boundary_check, so OOB positions are never written.
-        # Zero-padding the weight is safe here.
-        weight = tl.load(weight_block_ptr, boundary_check=(0,), padding_option="zero")
+        vals = in_desc.load([row_idx, col_offset])
+        weight = w_desc.load([0, col_offset])
 
         vals_f32 = vals.to(tl.float32)
         weight_f32 = weight.to(tl.float32)
         output_f32 = vals_f32 * inv_rms * weight_f32
         output = output_f32.to(vals.dtype)
 
-        tl.store(output_block_ptr, output, boundary_check=(0,))
-
-        input_block_ptr = tl.advance(input_block_ptr, (BLOCK_SIZE,))
-        weight_block_ptr = tl.advance(weight_block_ptr, (BLOCK_SIZE,))
-        output_block_ptr = tl.advance(output_block_ptr, (BLOCK_SIZE,))
+        out_desc.store([row_idx, col_offset], output)

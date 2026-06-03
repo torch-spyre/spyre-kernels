@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.decode_softmax_reducev.original import _fwd_kernel_stage2
 
 
@@ -18,6 +19,10 @@ def decode_softmax_reducev(
     lse = torch.empty(batch, heads, device=mid_o.device, dtype=torch.float32)
 
     grid = (batch, heads)
+    extra = {}
+    if "batch" in kernel_fn.arg_names:
+        ensure_triton_allocator()
+        extra = {"batch": batch, "heads": heads}
     kernel_fn[grid](
         mid_o,
         o,
@@ -29,6 +34,7 @@ def decode_softmax_reducev(
         o.stride(0),
         o.stride(1),
         lse.stride(0),
+        **extra,
         NUM_KV_SPLITS=num_kv_splits,
         BLOCK_DV=BLOCK_DV,
         Lv=Lv,

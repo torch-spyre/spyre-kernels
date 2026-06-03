@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.silu_and_mul.original import _swiglustep_and_mul_kernel
 
 
@@ -18,13 +19,27 @@ def silu_and_mul(
     output = torch.empty(n_rows, d, device=x.device, dtype=x.dtype)
     BLOCK_SIZE = 1024
     grid = (n_rows, triton.cdiv(d, BLOCK_SIZE))
-    kernel_fn[grid](
-        output,
-        output.stride(0),
-        x_2d,
-        x_2d.stride(0),
-        limit=limit,
-        d=d,
-        BLOCK_SIZE=BLOCK_SIZE,
-    )
+
+    if "n_rows" in kernel_fn.arg_names:
+        ensure_triton_allocator()
+        kernel_fn[grid](
+            output,
+            output.stride(0),
+            x_2d,
+            x_2d.stride(0),
+            n_rows,
+            limit=limit,
+            d=d,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+    else:
+        kernel_fn[grid](
+            output,
+            output.stride(0),
+            x_2d,
+            x_2d.stride(0),
+            limit=limit,
+            d=d,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
     return output.reshape(*original_shape[:-1], d)

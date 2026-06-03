@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.embedding.original import embedding_forward_kernel
 
 
@@ -33,6 +34,8 @@ def embedding(
         n_elements, embedding_dim,
         device=indices.device, dtype=embeddings.dtype,
     )
+
+    ensure_triton_allocator()
 
     BLOCK_SIZE_M = triton.next_power_of_2(min(128, embedding_dim))
     BLOCK_SIZE_N = triton.next_power_of_2(min(128, embedding_dim))

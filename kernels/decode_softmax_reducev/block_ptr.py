@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of _fwd_kernel_stage2.
+# Tensor-descriptor conversion of _fwd_kernel_stage2.
 # Original: vllm/v1/attention/ops/triton_decode_attention.py
 #
 # Changes from original:
-#   - The 1D load of partial V output per split uses a block pointer.
-#   - The 1D store of final output uses a block pointer.
-#   - Scalar loads (seq_len, per-split LSE) and scalar store (final LSE)
-#     remain as raw pointers — they are single-element accesses.
-#   - The block pointer for Mid_O V data cannot use tl.advance with the
-#     split stride because stride_mid_os is a runtime value, not constexpr.
-#     Instead we recreate the block pointer each iteration with the correct offset.
+#   - The per-split V load uses a 4D tensor descriptor over the
+#     (batch, heads, splits, Lv) view of Mid_O.
+#   - The final output store uses a 3D descriptor over (batch, heads, Lv).
+#   - Per-split LSE scalar loads stay raw (single-element).
 
 import torch
 import triton
@@ -30,12 +27,14 @@ def _fwd_kernel_stage2_block_ptr(
     stride_obs,
     stride_oh,
     stride_lse_bs,
+    batch,
+    heads,
     NUM_KV_SPLITS: tl.constexpr,
     BLOCK_DV: tl.constexpr,
     Lv: tl.constexpr,
 ):
     """
-    Online softmax merge — block-pointer version.
+    Online softmax merge — tensor-descriptor version.
 
     Grid: (batch, heads)
     """
@@ -48,8 +47,17 @@ def _fwd_kernel_stage2_block_ptr(
     e_max = -float("inf")
     acc = tl.zeros([BLOCK_DV], dtype=tl.float32)
 
-    base_v = Mid_O + cur_batch * stride_mid_ob + cur_head * stride_mid_oh
     offs_logic = cur_batch * stride_mid_ob + cur_head * stride_mid_oh + Lv
+
+    # Mid_O view: (batch, heads, splits, Lv) — last dim contiguous.
+    # Lv may not be a power of two; the descriptor's last-dim shape is Lv,
+    # block_shape is BLOCK_DV (next pow2). OOB lanes get zero.
+    v_desc = tl.make_tensor_descriptor(
+        Mid_O,
+        shape=[batch, heads, NUM_KV_SPLITS, Lv],
+        strides=[stride_mid_ob, stride_mid_oh, stride_mid_os, 1],
+        block_shape=[1, 1, 1, BLOCK_DV],
+    )
 
     for split_kv_id in range(0, NUM_KV_SPLITS):
         kv_len_per_split = tl.cdiv(cur_batch_seq_len, NUM_KV_SPLITS)
@@ -57,15 +65,7 @@ def _fwd_kernel_stage2_block_ptr(
         split_kv_end = tl.minimum(split_kv_start + kv_len_per_split, cur_batch_seq_len)
 
         if split_kv_end > split_kv_start:
-            v_block_ptr = tl.make_block_ptr(
-                base=base_v + split_kv_id * stride_mid_os,
-                shape=(Lv,),
-                strides=(1,),
-                offsets=(0,),
-                block_shape=(BLOCK_DV,),
-                order=(0,),
-            )
-            tv = tl.load(v_block_ptr, boundary_check=(0,), padding_option="zero")
+            tv = v_desc.load([cur_batch, cur_head, split_kv_id, 0]).reshape([BLOCK_DV])
 
             tlogic = tl.load(Mid_O + offs_logic + split_kv_id * stride_mid_os)
             n_e_max = tl.maximum(tlogic, e_max)
@@ -78,15 +78,13 @@ def _fwd_kernel_stage2_block_ptr(
             e_sum = e_sum * old_scale + exp_logic
             e_max = n_e_max
 
-    out_block_ptr = tl.make_block_ptr(
-        base=o + cur_batch * stride_obs + cur_head * stride_oh,
-        shape=(Lv,),
-        strides=(1,),
-        offsets=(0,),
-        block_shape=(BLOCK_DV,),
-        order=(0,),
+    o_desc = tl.make_tensor_descriptor(
+        o,
+        shape=[batch, heads, Lv],
+        strides=[stride_obs, stride_oh, 1],
+        block_shape=[1, 1, BLOCK_DV],
     )
-    tl.store(out_block_ptr, acc / e_sum, boundary_check=(0,))
+    o_desc.store([cur_batch, cur_head, 0], (acc / e_sum).reshape([1, 1, BLOCK_DV]))
 
     lse_val = e_max + tl.log(e_sum)
     tl.store(lse + cur_batch * stride_lse_bs + cur_head, lse_val)

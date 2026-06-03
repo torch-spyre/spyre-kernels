@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of reshape_and_cache_kernel_flash.
+# Tensor-descriptor conversion of reshape_and_cache_kernel_flash.
 # Original: vllm/v1/attention/ops/triton_reshape_and_cache_flash.py
 #
 # Changes from original:
-#   - Source key/value loads use 1D block pointers (contiguous tile from
-#     flattened [num_heads * head_size] per token).
-#   - Cache stores remain as raw pointers because the destination address
-#     depends on slot_mapping (data-dependent scatter).
+#   - Source key/value loads use 2D tensor descriptors over the
+#     (num_tokens, num_heads * head_size) flattened tensor.
+#   - Cache stores remain as raw masked stores because the destination
+#     address depends on slot_mapping (data-dependent scatter).
 #   - slot_mapping scalar load also remains raw.
-#   - Simplified: non-head-major layout, no FP8.
 
 import torch
 import triton
@@ -33,6 +32,7 @@ def _reshape_and_cache_kernel_block_ptr(
     dim_stride_k: tl.int64,
     dim_stride_v: tl.int64,
     page_stride: tl.int64,
+    num_tokens,
     num_heads: tl.constexpr,
     head_size: tl.constexpr,
     block_size: tl.constexpr,
@@ -42,8 +42,8 @@ def _reshape_and_cache_kernel_block_ptr(
     TILE_SIZE: tl.constexpr,
 ):
     """
-    Copy key/value into paged KV cache — block-pointer version.
-    Source loads use block pointers; cache stores remain raw (scatter).
+    Copy key/value into paged KV cache — tensor-descriptor version.
+    Source loads use descriptors; cache stores remain raw (scatter).
 
     Grid: (num_tokens, cdiv(num_heads * head_size, TILE_SIZE))
     """
@@ -58,26 +58,21 @@ def _reshape_and_cache_kernel_block_ptr(
     tile_i = tl.program_id(axis=1)
     n = num_heads * head_size
 
-    # Block pointers for source key/value (contiguous tile per token)
-    key_block_ptr = tl.make_block_ptr(
-        base=key_ptr + token_idx * key_stride,
-        shape=(n,),
-        strides=(1,),
-        offsets=(tile_i * TILE_SIZE,),
-        block_shape=(TILE_SIZE,),
-        order=(0,),
+    key_desc = tl.make_tensor_descriptor(
+        key_ptr,
+        shape=[num_tokens, n],
+        strides=[key_stride, 1],
+        block_shape=[1, TILE_SIZE],
     )
-    value_block_ptr = tl.make_block_ptr(
-        base=value_ptr + token_idx * value_stride,
-        shape=(n,),
-        strides=(1,),
-        offsets=(tile_i * TILE_SIZE,),
-        block_shape=(TILE_SIZE,),
-        order=(0,),
+    value_desc = tl.make_tensor_descriptor(
+        value_ptr,
+        shape=[num_tokens, n],
+        strides=[value_stride, 1],
+        block_shape=[1, TILE_SIZE],
     )
 
-    key_load = tl.load(key_block_ptr, boundary_check=(0,), padding_option="zero")
-    value_load = tl.load(value_block_ptr, boundary_check=(0,), padding_option="zero")
+    key_load = key_desc.load([token_idx, tile_i * TILE_SIZE]).reshape([TILE_SIZE])
+    value_load = value_desc.load([token_idx, tile_i * TILE_SIZE]).reshape([TILE_SIZE])
 
     # Cache stores: data-dependent scatter, remains raw pointer
     tile_offs = tl.arange(0, TILE_SIZE)

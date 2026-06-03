@@ -1,20 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of prefill attention _fwd_kernel.
+# Tensor-descriptor conversion of prefill attention _fwd_kernel.
 # Original: vllm/v1/attention/ops/triton_prefill_attention.py
 #
 # Changes from original:
-#   - Q load uses a 2D block pointer [BLOCK_M, BLOCK_DMODEL].
-#   - K loads in the inner loop use a 2D block pointer [BLOCK_DMODEL, BLOCK_N]
-#     advanced by BLOCK_N each iteration.
-#   - V loads use a 2D block pointer [BLOCK_N, BLOCK_DMODEL] advanced similarly.
-#   - O store uses a 2D block pointer [BLOCK_M, BLOCK_DMODEL].
-#   - Scalar loads (B_Start_Loc, B_Seqlen) remain raw.
-#   - Causal and sequence-length masking are applied post-load using
-#     tl.where, since block-pointer boundary_check only handles OOB
-#     (not causal masking).
-#   - Simplified: no sliding window.
+#   - Q/K/V/O accesses use 3D tensor descriptors over the full
+#     (total_tokens, num_*_heads, head_dim) tensors so the descriptor
+#     base is the input pointer (16-byte aligned trivially).
+#   - K is loaded as (BLOCK_N, BLOCK_DMODEL) and transposed via tl.trans
+#     before tl.dot(q, k_t). Tensor descriptors require the last dim
+#     contiguous, so K cannot be loaded pre-transposed (as block pointers
+#     allowed via strides=(1, stride_kbs)).
+#   - tl.advance is replaced with offset arithmetic per loop iteration.
+#   - Causal and sequence-length masking are still applied post-load via
+#     tl.where, identical to the block-pointer version.
 
 import math
 import torch
@@ -34,6 +34,8 @@ def _fwd_kernel_block_ptr(
     stride_kbs, stride_kh,
     stride_vbs, stride_vh,
     stride_obs, stride_oh,
+    num_q_heads,
+    num_kv_heads,
     kv_group_num: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_DMODEL: tl.constexpr,
@@ -55,46 +57,39 @@ def _fwd_kernel_block_ptr(
     block_start_loc = BLOCK_M * start_m
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
-    offs_d = tl.arange(0, BLOCK_DMODEL)
-    mask_d = offs_d < Lk
 
-    # ─── Q: 2D block pointer [BLOCK_M, BLOCK_DMODEL] ───
-    # Q is [total_tokens, heads, head_dim], stride_qbs = stride(0), stride_qh = stride(1)
-    # We need Q[cur_batch_start + start_m*BLOCK_M : ..., cur_head, :]
-    # With raw offsets: (start_idx + offs_m) * stride_qbs + cur_head * stride_qh + offs_d
-    # As block ptr: base at Q[start_idx, cur_head, 0], shape over the tokens dim
-    q_base = Q + cur_batch_in_all_start_index * stride_qbs + cur_head * stride_qh
-    q_block_ptr = tl.make_block_ptr(
-        base=q_base,
-        shape=(cur_batch_seq_len, Lk),
-        strides=(stride_qbs, 1),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, BLOCK_DMODEL),
-        order=(1, 0),
-    )
-    q = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero")
+    q_base = Q + cur_batch_in_all_start_index * stride_qbs
+    k_base = K + cur_batch_in_all_start_index * stride_kbs
+    v_base = V + cur_batch_in_all_start_index * stride_vbs
+    o_base = Out + cur_batch_in_all_start_index * stride_obs
 
-    # ─── K: 2D block pointer [BLOCK_DMODEL, BLOCK_N] (transposed for Q@K) ───
-    k_base = K + cur_batch_in_all_start_index * stride_kbs + cur_kv_head * stride_kh
-    k_block_ptr = tl.make_block_ptr(
-        base=k_base,
-        shape=(Lk, cur_batch_seq_len),
-        strides=(1, stride_kbs),
-        offsets=(0, 0),
-        block_shape=(BLOCK_DMODEL, BLOCK_N),
-        order=(0, 1),
+    q_desc = tl.make_tensor_descriptor(
+        q_base,
+        shape=[cur_batch_seq_len, num_q_heads, Lk],
+        strides=[stride_qbs, stride_qh, 1],
+        block_shape=[BLOCK_M, 1, BLOCK_DMODEL],
+    )
+    k_desc = tl.make_tensor_descriptor(
+        k_base,
+        shape=[cur_batch_seq_len, num_kv_heads, Lk],
+        strides=[stride_kbs, stride_kh, 1],
+        block_shape=[BLOCK_N, 1, BLOCK_DMODEL],
+    )
+    v_desc = tl.make_tensor_descriptor(
+        v_base,
+        shape=[cur_batch_seq_len, num_kv_heads, Lk],
+        strides=[stride_vbs, stride_vh, 1],
+        block_shape=[BLOCK_N, 1, BLOCK_DMODEL],
+    )
+    o_desc = tl.make_tensor_descriptor(
+        o_base,
+        shape=[cur_batch_seq_len, num_q_heads, Lk],
+        strides=[stride_obs, stride_oh, 1],
+        block_shape=[BLOCK_M, 1, BLOCK_DMODEL],
     )
 
-    # ─── V: 2D block pointer [BLOCK_N, BLOCK_DMODEL] ───
-    v_base = V + cur_batch_in_all_start_index * stride_vbs + cur_kv_head * stride_vh
-    v_block_ptr = tl.make_block_ptr(
-        base=v_base,
-        shape=(cur_batch_seq_len, Lk),
-        strides=(stride_vbs, 1),
-        offsets=(0, 0),
-        block_shape=(BLOCK_N, BLOCK_DMODEL),
-        order=(1, 0),
-    )
+    q_row0 = start_m * BLOCK_M
+    q = q_desc.load([q_row0, cur_head, 0]).reshape([BLOCK_M, BLOCK_DMODEL])
 
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
@@ -115,9 +110,11 @@ def _fwd_kernel_block_ptr(
         if IS_CAUSAL:
             mask &= pos_q >= pos_k
 
-        k = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        k_row0 = start_n
+        k_tile = k_desc.load([k_row0, cur_kv_head, 0]).reshape([BLOCK_N, BLOCK_DMODEL])
+        k_t = tl.trans(k_tile)
 
-        qk = tl.dot(q, k)
+        qk = tl.dot(q, k_t)
         qk = tl.where(mask, qk * sm_scale, -1.0e8)
         m_ij = tl.maximum(m_i, tl.max(qk, 1))
         qk -= m_ij[:, None]
@@ -128,25 +125,12 @@ def _fwd_kernel_block_ptr(
         l_i = l_i * alpha + l_ij
         acc = acc * alpha[:, None]
 
-        v = tl.load(v_block_ptr, boundary_check=(0, 1), padding_option="zero")
+        v = v_desc.load([k_row0, cur_kv_head, 0]).reshape([BLOCK_N, BLOCK_DMODEL])
         p = p.to(v.dtype)
         acc = tl.dot(p, v, acc)
         m_i = m_ij
 
-        k_block_ptr = tl.advance(k_block_ptr, (0, BLOCK_N))
-        v_block_ptr = tl.advance(v_block_ptr, (BLOCK_N, 0))
-
     acc = acc / l_i[:, None]
     acc = acc.to(Out.dtype.element_ty)
 
-    # ─── O: 2D block pointer [BLOCK_M, BLOCK_DMODEL] ───
-    o_base = Out + cur_batch_in_all_start_index * stride_obs + cur_head * stride_oh
-    o_block_ptr = tl.make_block_ptr(
-        base=o_base,
-        shape=(cur_batch_seq_len, Lk),
-        strides=(stride_obs, 1),
-        offsets=(start_m * BLOCK_M, 0),
-        block_shape=(BLOCK_M, BLOCK_DMODEL),
-        order=(1, 0),
-    )
-    tl.store(o_block_ptr, acc, boundary_check=(0, 1))
+    o_desc.store([q_row0, cur_head, 0], acc.reshape([BLOCK_M, 1, BLOCK_DMODEL]))

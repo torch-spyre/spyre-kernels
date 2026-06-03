@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of _swiglustep_and_mul_kernel.
+# Tensor-descriptor conversion of _swiglustep_and_mul_kernel.
 # Original: vllm/model_executor/layers/activation.py
 #
 # Changes from original:
-#   - All tl.load(ptr + offset, mask=...) replaced with
-#     tl.load(block_ptr, boundary_check=...)
-#   - All tl.store(ptr + offset, val, mask=...) replaced with
-#     tl.store(block_ptr, val, boundary_check=...)
-#   - Block pointers created via tl.make_block_ptr
-#   - gate and up are accessed via two 1D block pointers into the same row,
-#     offset by 0 and d respectively.
+#   - tl.load/tl.store with pointer arithmetic + masks replaced with
+#     tensor descriptors (tl.make_tensor_descriptor).
+#   - Tensor descriptors require >= 2 dimensions, so the row index lives
+#     inside the descriptor offsets rather than the base pointer. We pass
+#     n_rows from the wrapper for this purpose.
+#   - For the input we use a single descriptor over the (n_rows, 2*d) tensor
+#     and select the gate/up halves via the column offset (0 vs d).
 
 import torch
 import triton
@@ -24,12 +24,13 @@ def _swiglustep_and_mul_kernel_block_ptr(
     o_stride,
     x_ptr,
     x_stride,
+    n_rows,
     limit: tl.constexpr,
     d: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
     """
-    SwiGLU with clamping — block-pointer version.
+    SwiGLU with clamping — tensor-descriptor version.
 
     Input x is [n_rows, 2*d]. gate = x[:, :d], up = x[:, d:].
     Output o is [n_rows, d].
@@ -39,36 +40,23 @@ def _swiglustep_and_mul_kernel_block_ptr(
     j = tl.program_id(axis=1)
 
     col_offset = j * BLOCK_SIZE
+    row = i.to(tl.int32)
 
-    gate_block_ptr = tl.make_block_ptr(
-        base=x_ptr + i * x_stride,
-        shape=(d,),
-        strides=(1,),
-        offsets=(col_offset,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
+    x_desc = tl.make_tensor_descriptor(
+        x_ptr,
+        shape=[n_rows, 2 * d],
+        strides=[x_stride, 1],
+        block_shape=[1, BLOCK_SIZE],
+    )
+    o_desc = tl.make_tensor_descriptor(
+        o_ptr,
+        shape=[n_rows, d],
+        strides=[o_stride, 1],
+        block_shape=[1, BLOCK_SIZE],
     )
 
-    up_block_ptr = tl.make_block_ptr(
-        base=x_ptr + i * x_stride + d,
-        shape=(d,),
-        strides=(1,),
-        offsets=(col_offset,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
-    )
-
-    out_block_ptr = tl.make_block_ptr(
-        base=o_ptr + i * o_stride,
-        shape=(d,),
-        strides=(1,),
-        offsets=(col_offset,),
-        block_shape=(BLOCK_SIZE,),
-        order=(0,),
-    )
-
-    gate = tl.load(gate_block_ptr, boundary_check=(0,), padding_option="zero").to(tl.float32)
-    up = tl.load(up_block_ptr, boundary_check=(0,), padding_option="zero").to(tl.float32)
+    gate = x_desc.load([row, col_offset]).to(tl.float32)
+    up = x_desc.load([row, d + col_offset]).to(tl.float32)
 
     gate_silu = tl.sigmoid(gate) * gate
     gate_clamped = tl.minimum(gate_silu, limit)
@@ -76,4 +64,4 @@ def _swiglustep_and_mul_kernel_block_ptr(
 
     result = gate_clamped * up_clamped
     result = result.to(x_ptr.dtype.element_ty)
-    tl.store(out_block_ptr, result, boundary_check=(0,))
+    o_desc.store([row, col_offset], result)

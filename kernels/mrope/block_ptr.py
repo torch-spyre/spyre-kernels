@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
-# Block-pointer conversion of _triton_mrope_forward.
+# Tensor-descriptor conversion of _triton_mrope_forward.
 # Original: vllm/model_executor/layers/rotary_embedding/mrope.py
 #
 # Changes from original:
-#   - q/k 2D loads/stores (heads × half_rd) use 2D block pointers.
+#   - q/k 2D loads/stores (heads × half_rd) use tensor descriptors
+#     (tl.make_tensor_descriptor) instead of pointer arithmetic + masks.
 #   - cos/sin loads remain as raw masked pointers since they involve
 #     masked gathering from 3 different base addresses (T/H/W dims)
-#     which cannot be expressed as block pointers.
+#     which cannot be expressed as descriptors.
 #   - The kernel is in-place on q and k, same as original.
 #
-# Optimizations over naive block-ptr conversion:
-#   - order=(0, 1) to match row-major layout (stride-1 along dim 1)
-#   - tl.advance to reuse block pointers for second-half loads
-#   - boundary_check only on dimensions that actually need it
+# Tensor-descriptor specifics:
+#   - The descriptor is rooted at q_ptr/k_ptr (not the per-token slice)
+#     and we offset by [pid * n_qh, half_offset] each load/store. This
+#     keeps the leading-stride alignment requirement (16-byte) trivially
+#     satisfied since hd is row-stride in elements.
+#   - desc.load already pads OOB with zero, replacing boundary_check.
 
 import torch
 import triton
@@ -41,8 +44,6 @@ def _triton_mrope_forward_block_ptr(
     is_interleaved: tl.constexpr,
 ):
     pid = tl.program_id(0)
-    q_base = q_ptr + pid * (n_qh * hd)
-    k_base = k_ptr + pid * (n_kh * hd)
 
     half_rd = rd // 2
 
@@ -76,45 +77,38 @@ def _triton_mrope_forward_block_ptr(
     cos_row = t_cos_row + h_cos_row + w_cos_row
     sin_row = t_sin_row + h_sin_row + w_sin_row
 
-    # ─── q loads/stores: 2D block pointers [n_heads, half_rd] ───
-    # order=(0, 1): dim 1 (columns) is contiguous in memory (stride=1)
-    q_block_ptr = tl.make_block_ptr(
-        base=q_base,
-        shape=(n_qh, rd),
-        strides=(hd, 1),
-        offsets=(0, 0),
-        block_shape=(pad_n_qh, pad_hd // 2),
-        order=(0, 1),
+    # ─── q loads/stores: 2D tensor descriptor over the full q tensor ───
+    q_desc = tl.make_tensor_descriptor(
+        q_ptr,
+        shape=[num_tokens * n_qh, hd],
+        strides=[hd, 1],
+        block_shape=[pad_n_qh, pad_hd // 2],
     )
+    row0 = pid * n_qh
 
-    q_tile_1 = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
-    q_block_ptr = tl.advance(q_block_ptr, (0, half_rd))
-    q_tile_2 = tl.load(q_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    q_tile_1 = q_desc.load([row0, 0]).to(sin_row.dtype)
+    q_tile_2 = q_desc.load([row0, half_rd]).to(sin_row.dtype)
 
     new_q_tile_1 = q_tile_1 * cos_row - q_tile_2 * sin_row
     new_q_tile_2 = q_tile_2 * cos_row + q_tile_1 * sin_row
 
-    tl.store(q_block_ptr, new_q_tile_2, boundary_check=(0, 1))
-    q_block_ptr = tl.advance(q_block_ptr, (0, -half_rd))
-    tl.store(q_block_ptr, new_q_tile_1, boundary_check=(0, 1))
+    q_desc.store([row0, 0], new_q_tile_1)
+    q_desc.store([row0, half_rd], new_q_tile_2)
 
-    # ─── k loads/stores: 2D block pointers [n_kh, half_rd] ───
-    k_block_ptr = tl.make_block_ptr(
-        base=k_base,
-        shape=(n_kh, rd),
-        strides=(hd, 1),
-        offsets=(0, 0),
-        block_shape=(pad_n_kh, pad_hd // 2),
-        order=(0, 1),
+    # ─── k loads/stores: 2D tensor descriptor over the full k tensor ───
+    k_desc = tl.make_tensor_descriptor(
+        k_ptr,
+        shape=[num_tokens * n_kh, hd],
+        strides=[hd, 1],
+        block_shape=[pad_n_kh, pad_hd // 2],
     )
+    krow0 = pid * n_kh
 
-    k_tile_1 = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
-    k_block_ptr = tl.advance(k_block_ptr, (0, half_rd))
-    k_tile_2 = tl.load(k_block_ptr, boundary_check=(0, 1), padding_option="zero").to(sin_row.dtype)
+    k_tile_1 = k_desc.load([krow0, 0]).to(sin_row.dtype)
+    k_tile_2 = k_desc.load([krow0, half_rd]).to(sin_row.dtype)
 
     new_k_tile_1 = k_tile_1 * cos_row - k_tile_2 * sin_row
     new_k_tile_2 = k_tile_2 * cos_row + k_tile_1 * sin_row
 
-    tl.store(k_block_ptr, new_k_tile_2, boundary_check=(0, 1))
-    k_block_ptr = tl.advance(k_block_ptr, (0, -half_rd))
-    tl.store(k_block_ptr, new_k_tile_1, boundary_check=(0, 1))
+    k_desc.store([krow0, 0], new_k_tile_1)
+    k_desc.store([krow0, half_rd], new_k_tile_2)

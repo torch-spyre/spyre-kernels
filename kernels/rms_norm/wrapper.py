@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.rms_norm.original import _rms_norm_kernel
 
 
@@ -24,14 +25,29 @@ def rms_norm(
     output = torch.empty_like(input_2d)
     BLOCK_SIZE = 1024
     grid = (n_rows,)
-    kernel_fn[grid](
-        input_2d,
-        weight,
-        output,
-        input_2d.stride(0),
-        output.stride(0),
-        n_cols,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-    )
+
+    if "n_rows" in kernel_fn.arg_names:
+        ensure_triton_allocator()
+        kernel_fn[grid](
+            input_2d,
+            weight,
+            output,
+            input_2d.stride(0),
+            output.stride(0),
+            n_rows,
+            n_cols,
+            eps,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
+    else:
+        kernel_fn[grid](
+            input_2d,
+            weight,
+            output,
+            input_2d.stride(0),
+            output.stride(0),
+            n_cols,
+            eps,
+            BLOCK_SIZE=BLOCK_SIZE,
+        )
     return output.reshape(original_shape)

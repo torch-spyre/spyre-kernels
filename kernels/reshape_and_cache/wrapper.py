@@ -1,6 +1,7 @@
 import torch
 import triton
 
+from kernels._tma import ensure_triton_allocator
 from kernels.reshape_and_cache.original import reshape_and_cache_kernel_flash
 
 
@@ -18,7 +19,13 @@ def reshape_and_cache(
     n = num_heads * head_size
 
     TILE_SIZE = min(1024, triton.next_power_of_2(n))
-    grid = (slot_mapping.shape[0], triton.cdiv(n, TILE_SIZE))
+    num_tokens = slot_mapping.shape[0]
+    grid = (num_tokens, triton.cdiv(n, TILE_SIZE))
+
+    extra = {}
+    if "num_tokens" in kernel_fn.arg_names:
+        ensure_triton_allocator()
+        extra["num_tokens"] = num_tokens
 
     kernel_fn[grid](
         key_ptr=key,
@@ -42,4 +49,5 @@ def reshape_and_cache(
         USE_HEAD_MAJOR_LAYOUT=False,
         FP8_KV_CACHE=False,
         TILE_SIZE=TILE_SIZE,
+        **extra,
     )
