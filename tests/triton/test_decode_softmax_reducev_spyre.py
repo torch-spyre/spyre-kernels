@@ -25,7 +25,7 @@ def decode_softmax_reducev_spyre(
     num_kv_splits: int,
     num_cores: int = 32,
     tile_size_dv: int = 64,
-    block_h: int = 8,
+    block_bh: int = 8,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Launch the Spyre decode_softmax_reducev kernel with a fixed grid."""
     batch, heads, _splits, lv_plus_1 = mid_o.shape
@@ -34,12 +34,14 @@ def decode_softmax_reducev_spyre(
     o = torch.empty(batch, heads, Lv, device=mid_o.device, dtype=mid_o.dtype)
     lse = torch.empty(batch, heads, device=mid_o.device, dtype=torch.float32)
 
+    b_seq_len_expanded = b_seq_len.repeat_interleave(heads)
+
     grid = (num_cores,)
     _fwd_kernel_stage2_spyre[grid](
         mid_o,
         o,
         lse,
-        b_seq_len,
+        b_seq_len_expanded,
         mid_o.stride(0),
         mid_o.stride(1),
         mid_o.stride(2),
@@ -50,7 +52,7 @@ def decode_softmax_reducev_spyre(
         heads,
         NUM_KV_SPLITS=num_kv_splits,
         BLOCK_SIZE=tile_size_dv,
-        BLOCK_H=block_h,
+        BLOCK_BH=block_bh,
         Lv=Lv,
     )
     return o, lse
