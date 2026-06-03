@@ -84,6 +84,18 @@ After verifying the hard constraint (tiles fit), assess whether the kernel is **
    - Increases compute density on inner multiply-add operations
    - May escape the 16-byte descriptor minimum: if a scalar load becomes a `[BLOCK_ITEMS]` vector load, `BLOCK_ITEMS × dtype_bytes ≥ 16` satisfies the constraint naturally (e.g., `BLOCK_ITEMS=4` × 4 bytes = 16 bytes)
 
+6. **Cross-reference with GAP 1 findings**: If the kernel has scalar descriptors flagged in Step 4/5 (block_shape with < 16 bytes in the last dim), check whether batching along the work axis would widen that dimension to ≥ 16 bytes. If so, report that batching is not just a performance improvement but also a **gap resolution path** — it eliminates the need for the scalar descriptor entirely.
+
+7. **Divergent control flow across batched items**: If items in a tile have different runtime parameters (e.g., different lengths that control which loop iterations are active), batching is still possible with per-lane masking. The pattern:
+   - Load a vector of per-item parameters (one per lane in the batch axis)
+   - Compute per-lane boolean masks for conditional logic
+   - Use `tl.where` to zero contributions from inactive lanes
+   - The reduction stays per-item (elementwise across the batch axis)
+   
+   Report this as feasible-with-masking rather than infeasible.
+
+8. **Distribution granularity trade-off**: Batching reduces the number of distributable tiles. If `cdiv(total_work, BLOCK_ITEMS) < 32`, some cores will be idle. Report the trade-off: suggest a `BLOCK_ITEMS` value where `total_work / BLOCK_ITEMS ≥ 32` for typical problem sizes, or note that the kernel will under-utilize cores for small problems.
+
 **Report this as WARN (not FAIL)** — scratchpad under-use is a performance issue, not a correctness/compliance issue. Include specific recommendations for which axis to batch and what `BLOCK_ITEMS` value to use.
 
 **Caveat — when batching across an axis is NOT possible:**

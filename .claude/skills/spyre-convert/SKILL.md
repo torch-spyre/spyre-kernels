@@ -140,6 +140,32 @@ Raw pointer `tl.load`/`tl.store` with `tt.addptr` are legacy TTIR operations. Th
 
 **Utilize the scratchpad**: Each Spyre core has 2MB of scratchpad. If the distribution loop processes one work item per iteration with a small accumulator, most of that scratchpad is wasted. Batch multiple work items per iteration — widen the accumulator and load larger tiles — so that each core's scratchpad is filled with useful live data. This improves compute density and amortizes descriptor overhead.
 
+### 6b. Batch work items to utilize scratchpad and escape descriptor gaps
+
+After producing the initial single-item conversion, evaluate whether the distribution loop processes one work item per iteration (e.g., one row, one token, one (batch, head) pair). If so, consider batching `BLOCK_ITEMS` work items per iteration:
+
+**When to batch:**
+- The work items are **independent** — each has its own accumulator/reduction state with no cross-item dependencies.
+- The scratchpad can fit `BLOCK_ITEMS` copies of the per-item live data within 2 MB.
+- A scalar descriptor (`block_shape=[1]` or `block_shape=[..., 1]`) hits the 16-byte minimum gap — batching along that axis may widen the block to `[BLOCK_ITEMS]`, naturally satisfying ≥ 16 bytes.
+
+**How to batch:**
+1. Introduce a `BLOCK_ITEMS: tl.constexpr` tile parameter for the work axis.
+2. Change the distribution granularity: distribute over `cdiv(total_work, BLOCK_ITEMS)` tiles instead of individual items.
+3. Widen the accumulator: `[BLOCK_SIZE]` → `[BLOCK_ITEMS, BLOCK_SIZE]`.
+4. Load `BLOCK_ITEMS` elements per descriptor access on the work axis.
+5. If items in a tile may have divergent control flow (e.g., different sequence lengths determining which loop iterations are active), handle this with per-lane masking — compute a boolean mask per item and use `tl.where` to zero contributions from inactive lanes. The reduction math stays per-item (elementwise across the batch axis).
+
+**Memory layout considerations:**
+- If the work axis maps to a dimension with uniform stride between consecutive items (e.g., a contiguous or regularly-strided layout), the descriptor can use that stride directly with `block_shape=[BLOCK_ITEMS, ...]`.
+- If consecutive work items cross a boundary in the original tensor (e.g., tiling over flattened `batch × heads` where `stride_batch = heads × stride_head`), verify that the stride between any two consecutive items is uniform. For standard contiguous layouts this holds. For non-contiguous layouts, restrict batching to within one higher-level dimension or restructure the wrapper to provide a uniformly-strided view.
+- If a per-item auxiliary value (e.g., a per-batch scalar) is needed for each item in the tile, the wrapper can expand it to `[total_work_items]` via `repeat_interleave` so the kernel loads `BLOCK_ITEMS` values in one descriptor access.
+
+**Choosing BLOCK_ITEMS:**
+- Minimum: 4 (escapes the 16-byte gap for 4-byte dtypes).
+- Balance scratchpad utilization against distribution granularity: `BLOCK_ITEMS` too large means fewer tiles to distribute across 32 cores (some may sit idle). Choose so that `cdiv(total_work, BLOCK_ITEMS) ≥ 32` for typical problem sizes.
+- Power-of-2 values preferred for hardware efficiency.
+
 ### 6. Strides must be expressible at descriptor creation
 
 Tensor descriptors require strides to be known when the descriptor is created. For row-major contiguous tensors, use computed strides like `[N, 1]` for a `[M, N]` tensor. If the original kernel receives strides as runtime arguments, the descriptor can still use them — pass them directly to `strides=[stride_row, stride_col]`.
