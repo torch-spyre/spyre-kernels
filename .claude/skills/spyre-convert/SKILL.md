@@ -89,6 +89,50 @@ Key differences:
 - `mask` is not used — OOB loads return zero by default
 - `order` parameter does not exist — layout is determined by strides
 
+#### Drop the tail mask — the descriptor `shape` replaces it
+
+A raw-pointer kernel **must** mask the partial tail tile, because a pointer is just an
+address with no knowledge of where the tensor ends. The descriptor's `shape=[...]`
+argument **is** the boundary: it is declared once at construction, and every `.load()`
+zero-fills out-of-range lanes while every `.store()` clamps writes at the boundary. So
+the `mask`/`tl.where`/`other=` machinery from the original is **redundant** — do not
+port it over.
+
+**Before (raw pointer — masking is mandatory):**
+```python
+offs = tile * BLOCK + tl.arange(0, BLOCK)
+mask = offs < N
+x = tl.load(in_ptr + offs, mask=mask, other=0.0)
+acc += tl.sum(tl.where(mask, x, 0.0))        # re-mask before reducing
+```
+
+**After (descriptor — no mask needed):**
+```python
+x = in_desc.load([tile * BLOCK])             # lanes >= N already zero-filled
+acc += tl.sum(x)                             # the zero lanes are the sum identity
+```
+
+The same applies to the store side: an elementwise kernel that loads a tile, transforms
+it, and stores it needs no mask at either end — `out_desc.store([off], y)` clamps the
+write at `shape`, so the tail tile never writes past `N`:
+```python
+x = in_desc.load([off])
+out_desc.store([off], f(x))                  # write clamped at the boundary
+```
+
+This is not just shorter — for an additive reduction the zero-fill is *correct by
+construction*: out-of-range lanes contribute the reduction's identity (0 for sum), so
+they drop out automatically. Carrying a manual mask re-zeroes lanes that are already
+zero — dead weight that also forces you to rebuild `arange`/`[None, :]` broadcasts inside
+the loop (extra clutter, and worse on multi-dim batched tiles where the 1D mask must be
+broadcast to match the tile rank).
+
+**Caveat — non-identity fills.** Zero-fill is the identity only for additive reductions.
+If a tail lane's value must be a *non-zero* identity (e.g. `other=1.0` for a product
+reduction, or `-inf` for a max), the descriptor's zero-fill is wrong and you DO need to
+post-process the tail. These cases are rare in practice; the common reduce-to-sum and
+elementwise-then-store paths need no mask.
+
 ### 2. Replace unbounded GPU grid with 32-core distribution loop
 
 **Before (GPU-shaped):**
