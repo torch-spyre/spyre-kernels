@@ -10,8 +10,7 @@
 #     out-of-bounds columns (zero padding on load), removing the need
 #     for explicit masks.
 #   - Grid is unchanged from the original: one program per row,
-#     grid = (n_rows,). The Spyre-aware distribution loop (capped core
-#     count, rows_per_core) is intentionally NOT part of this kernel.
+#     grid = (n_rows,).
 
 import triton
 import triton.language as tl
