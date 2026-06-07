@@ -89,6 +89,50 @@ Key differences:
 - `mask` is not used — OOB loads return zero by default
 - `order` parameter does not exist — layout is determined by strides
 
+#### Drop the tail mask — the descriptor `shape` replaces it
+
+A raw-pointer kernel **must** mask the partial tail tile, because a pointer is just an
+address with no knowledge of where the tensor ends. The descriptor's `shape=[...]`
+argument **is** the boundary: it is declared once at construction, and every `.load()`
+zero-fills out-of-range lanes while every `.store()` clamps writes at the boundary. So
+the `mask`/`tl.where`/`other=` machinery from the original is **redundant** — do not
+port it over.
+
+**Before (raw pointer — masking is mandatory):**
+```python
+offs = tile * BLOCK + tl.arange(0, BLOCK)
+mask = offs < N
+x = tl.load(in_ptr + offs, mask=mask, other=0.0)
+acc += tl.sum(tl.where(mask, x, 0.0))        # re-mask before reducing
+```
+
+**After (descriptor — no mask needed):**
+```python
+x = in_desc.load([tile * BLOCK])             # lanes >= N already zero-filled
+acc += tl.sum(x)                             # the zero lanes are the sum identity
+```
+
+The same applies to the store side: an elementwise kernel that loads a tile, transforms
+it, and stores it needs no mask at either end — `out_desc.store([off], y)` clamps the
+write at `shape`, so the tail tile never writes past `N`:
+```python
+x = in_desc.load([off])
+out_desc.store([off], f(x))                  # write clamped at the boundary
+```
+
+This is not just shorter — for an additive reduction the zero-fill is *correct by
+construction*: out-of-range lanes contribute the reduction's identity (0 for sum), so
+they drop out automatically. Carrying a manual mask re-zeroes lanes that are already
+zero — dead weight that also forces you to rebuild `arange`/`[None, :]` broadcasts inside
+the loop (extra clutter, and worse on multi-dim batched tiles where the 1D mask must be
+broadcast to match the tile rank).
+
+**Caveat — non-identity fills.** Zero-fill is the identity only for additive reductions.
+If a tail lane's value must be a *non-zero* identity (e.g. `other=1.0` for a product
+reduction, or `-inf` for a max), the descriptor's zero-fill is wrong and you DO need to
+post-process the tail. These cases are rare in practice; the common reduce-to-sum and
+elementwise-then-store paths need no mask.
+
 ### 2. Replace unbounded GPU grid with 32-core distribution loop
 
 **Before (GPU-shaped):**
@@ -139,6 +183,32 @@ Raw pointer `tl.load`/`tl.store` with `tt.addptr` are legacy TTIR operations. Th
 **When gaps apply**: Write the kernel in descriptor form anyway (the target form for when gaps are resolved), and annotate each gap site with a comment. This makes it clear what will work once the compiler catches up, and avoids rewriting later.
 
 **Utilize the scratchpad**: Each Spyre core has 2MB of scratchpad. If the distribution loop processes one work item per iteration with a small accumulator, most of that scratchpad is wasted. Batch multiple work items per iteration — widen the accumulator and load larger tiles — so that each core's scratchpad is filled with useful live data. This improves compute density and amortizes descriptor overhead.
+
+### 6b. Batch work items to utilize scratchpad and escape descriptor gaps
+
+After producing the initial single-item conversion, evaluate whether the distribution loop processes one work item per iteration (e.g., one row, one token, one (batch, head) pair). If so, consider batching `BLOCK_ITEMS` work items per iteration:
+
+**When to batch:**
+- The work items are **independent** — each has its own accumulator/reduction state with no cross-item dependencies.
+- The scratchpad can fit `BLOCK_ITEMS` copies of the per-item live data within 2 MB.
+- A scalar descriptor (`block_shape=[1]` or `block_shape=[..., 1]`) hits the 16-byte minimum gap — batching along that axis may widen the block to `[BLOCK_ITEMS]`, naturally satisfying ≥ 16 bytes.
+
+**How to batch:**
+1. Introduce a `BLOCK_ITEMS: tl.constexpr` tile parameter for the work axis.
+2. Change the distribution granularity: distribute over `cdiv(total_work, BLOCK_ITEMS)` tiles instead of individual items.
+3. Widen the accumulator: `[BLOCK_SIZE]` → `[BLOCK_ITEMS, BLOCK_SIZE]`.
+4. Load `BLOCK_ITEMS` elements per descriptor access on the work axis.
+5. If items in a tile may have divergent control flow (e.g., different sequence lengths determining which loop iterations are active), handle this with per-lane masking — compute a boolean mask per item and use `tl.where` to zero contributions from inactive lanes. The reduction math stays per-item (elementwise across the batch axis).
+
+**Memory layout considerations:**
+- If the work axis maps to a dimension with uniform stride between consecutive items (e.g., a contiguous or regularly-strided layout), the descriptor can use that stride directly with `block_shape=[BLOCK_ITEMS, ...]`.
+- If consecutive work items cross a boundary in the original tensor (e.g., tiling over flattened `batch × heads` where `stride_batch = heads × stride_head`), verify that the stride between any two consecutive items is uniform. For standard contiguous layouts this holds. For non-contiguous layouts, restrict batching to within one higher-level dimension or restructure the wrapper to provide a uniformly-strided view.
+- If a per-item auxiliary value (e.g., a per-batch scalar) is needed for each item in the tile, the wrapper can expand it to `[total_work_items]` via `repeat_interleave` so the kernel loads `BLOCK_ITEMS` values in one descriptor access.
+
+**Choosing BLOCK_ITEMS:**
+- Minimum: 4 (escapes the 16-byte gap for 4-byte dtypes).
+- Balance scratchpad utilization against distribution granularity: `BLOCK_ITEMS` too large means fewer tiles to distribute across 32 cores (some may sit idle). Choose so that `cdiv(total_work, BLOCK_ITEMS) ≥ 32` for typical problem sizes.
+- Power-of-2 values preferred for hardware efficiency.
 
 ### 6. Strides must be expressible at descriptor creation
 

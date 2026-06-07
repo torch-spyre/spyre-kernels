@@ -84,6 +84,18 @@ After verifying the hard constraint (tiles fit), assess whether the kernel is **
    - Increases compute density on inner multiply-add operations
    - May escape the 16-byte descriptor minimum: if a scalar load becomes a `[BLOCK_ITEMS]` vector load, `BLOCK_ITEMS × dtype_bytes ≥ 16` satisfies the constraint naturally (e.g., `BLOCK_ITEMS=4` × 4 bytes = 16 bytes)
 
+6. **Cross-reference with GAP 1 findings**: If the kernel has scalar descriptors flagged in Step 4/5 (block_shape with < 16 bytes in the last dim), check whether batching along the work axis would widen that dimension to ≥ 16 bytes. If so, report that batching is not just a performance improvement but also a **gap resolution path** — it eliminates the need for the scalar descriptor entirely.
+
+7. **Divergent control flow across batched items**: If items in a tile have different runtime parameters (e.g., different lengths that control which loop iterations are active), batching is still possible with per-lane masking. The pattern:
+   - Load a vector of per-item parameters (one per lane in the batch axis)
+   - Compute per-lane boolean masks for conditional logic
+   - Use `tl.where` to zero contributions from inactive lanes
+   - The reduction stays per-item (elementwise across the batch axis)
+   
+   Report this as feasible-with-masking rather than infeasible.
+
+8. **Distribution granularity trade-off**: Batching reduces the number of distributable tiles. If `cdiv(total_work, BLOCK_ITEMS) < 32`, some cores will be idle. Report the trade-off: suggest a `BLOCK_ITEMS` value where `total_work / BLOCK_ITEMS ≥ 32` for typical problem sizes, or note that the kernel will under-utilize cores for small problems.
+
 **Report this as WARN (not FAIL)** — scratchpad under-use is a performance issue, not a correctness/compliance issue. Include specific recommendations for which axis to batch and what `BLOCK_ITEMS` value to use.
 
 **Caveat — when batching across an axis is NOT possible:**
@@ -136,8 +148,24 @@ Check that:
 5. Descriptor `block_shape` uses constexprs for tile dimensions
 6. Loads/stores use offset expressions that are multiples of block dimensions: `[i * BLOCK_M, j * BLOCK_N]`
 7. No `tl.advance` calls (block_ptr pattern, not descriptor pattern)
+8. **No redundant tail masking** layered on descriptor loads/stores (see below)
 
 **No raw pointer usage is acceptable.** All accesses must use descriptors. When a descriptor hits a known compiler gap (≥16-byte last-dim minimum, rank-reduced loads), write the descriptor form anyway and annotate with the relevant gap comment.
+
+**Redundant tail masking is dead weight.** The descriptor `shape=[...]` already encodes the tensor boundary: every `.load()` zero-fills out-of-range lanes and every `.store()` clamps writes at the boundary. A converted kernel that *also* carries the original's `mask`/`tl.where`/`other=` machinery is re-zeroing lanes that are already zero. This is a common conversion artifact — the author ports the raw-pointer mask over without realizing the descriptor subsumes it. Flag it as a **WARN** (cleanup, not a correctness failure): the manual mask is harmless but adds clutter and forces needless `tl.arange`/`[None, :]` broadcasts inside the loop (worse on multi-dim batched tiles). Recommend deleting it.
+
+```python
+# WARN — redundant: descriptor load already zero-filled lanes >= N
+x = in_desc.load([tile * BLOCK])
+offs = tile * BLOCK + tl.arange(0, BLOCK)
+acc += tl.sum(tl.where(offs < N, x, 0.0))    # mask re-zeroes already-zero lanes
+
+# CLEAN — let the descriptor's shape carry the boundary
+x = in_desc.load([tile * BLOCK])
+acc += tl.sum(x)                             # zero lanes are the sum identity
+```
+
+**Exception — non-identity fills.** Zero-fill is the reduction identity only for additive reductions (sum). If the tail must carry a *non-zero* identity — `1.0` for a product, `-inf` for a max — the descriptor's zero-fill is wrong and an explicit tail fix-up IS required. Do not flag masking in that case; instead verify the fix-up uses the correct identity. (A converted kernel that drops the mask *and* needs a non-zero identity is a correctness FAIL — check this against the original's `other=` value.)
 
 ### Step 5: Check descriptor memory pattern constraints
 
@@ -233,9 +261,10 @@ Verify these GPU-specific patterns are absent:
 - Tail handling: <present/missing where>
 
 ### Descriptor API usage
-**Status:** PASS / FAIL
+**Status:** PASS / WARN / FAIL
 - Descriptors: <count> created
 - Raw pointer loads: <count> (justified: <yes/no for each>)
+- Redundant tail masking: <none / present at <location> — recommend removing>
 - Issues: <any>
 
 ### Descriptor memory patterns

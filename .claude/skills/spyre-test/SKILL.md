@@ -115,10 +115,58 @@ class Test<Name>SpyreEdgeCases:
 - Call both the original wrapper and the Spyre wrapper
 - Compare with `torch.testing.assert_close(out_spyre, out_original, atol=..., rtol=...)`
 
-**Tolerance guidelines:**
-- f32 output from f32 inputs: `atol=1e-5, rtol=1e-5`
-- f32 output from f16/bf16 inputs: `atol=1e-5, rtol=1e-5` (reductions accumulate in f32)
-- f16 output from f16 inputs: `atol=1e-2, rtol=0`
+**Tolerances: size them to the dtype's ULP, not a round number.**
+
+When the Spyre kernel and the original differ *only* in floating-point
+operation order (e.g. a reduction accumulated across tiles vs. reduced
+per-tile), the inputs are identical and both compute the same math — so
+the output can differ by at most ~1 ULP of the *output* dtype. The
+tolerance should reflect that bound, not a habitual `1e-2`/`1e-3`. A
+reviewer will (rightly) push back on a tolerance that is looser than the
+ULP justification claims.
+
+1 ULP near 1.0 is `2^-mantissa_bits`:
+
+| output dtype | mantissa bits | ~1 ULP | tolerance |
+|--------------|---------------|--------|-----------|
+| float32      | 23            | ~1e-7  | `atol=1e-5, rtol=1e-5` |
+| float16      | 10            | ~1e-3  | `atol=1e-3, rtol=1e-3` |
+| bfloat16     | 7             | ~8e-3  | `atol=8e-3, rtol=8e-3` |
+
+Define these once as a per-dtype `TOL` dict and look up `TOL[dtype]` at
+each assertion, so parametrized tests stay consistent and the rationale
+lives in one place:
+
+```python
+# Kernels differ only in f32 reduction order → single inv_rms scalar →
+# rounded back to the output dtype, so per-element error is <=1 ULP.
+TOL = {
+    torch.float32: dict(atol=1e-5, rtol=1e-5),
+    torch.float16: dict(atol=1e-3, rtol=1e-3),
+    torch.bfloat16: dict(atol=8e-3, rtol=8e-3),
+}
+...
+torch.testing.assert_close(out_spyre, out_original, **TOL[dtype])
+```
+
+Adjust *up* from these only with a stated reason — e.g. the divergence is
+not pure reordering (different algorithm, more accumulation steps, an
+`inv_rms` precomputed-then-multiplied that adds round-off), or the KB
+documents a known precision difference for this kernel type or for Spyre
+DL16. Write the reason in a comment next to the tolerance. **f32 outputs
+should be near-exact** even from f16/bf16 inputs, because reductions
+accumulate in f32 — keep `1e-5`.
+
+**Single-tile cases are bitwise-identical.** When a row/problem fits in one
+tile (`size <= BLOCK_SIZE`), there is no reduction-order difference at all,
+so assert `atol=0, rtol=0` rather than a ULP tolerance — a loose tolerance
+there would hide a real regression.
+
+**Verify on GPU before trusting the number.** ULP bounds are an estimate;
+run the test on CCC (see the ccc-test skill) and confirm the tightest
+dtype/largest-shape case (e.g. bf16 at the biggest hidden size, most tiles)
+passes. If it brushes the bound, the divergence isn't pure reordering —
+investigate rather than loosening reflexively.
 
 ### 2. Distribution invariance (varying core counts)
 
@@ -154,6 +202,8 @@ The Spyre wrapper differs from the original wrapper:
 4. [ ] Distribution tests with `CORE_COUNTS = [1, 4, 16, 32]`
 5. [ ] Edge cases: non-divisible, minimum size, asymmetric
 6. [ ] All comparisons use `torch.testing.assert_close` against original kernel
-7. [ ] `torch.manual_seed(42)` in every test for reproducibility
-8. [ ] Random inputs (not handcrafted) — catches more bugs
-9. [ ] No torch.matmul or PyTorch reference — compare only against original kernel
+7. [ ] Tolerances sized to the output dtype's ULP via a `TOL` dict (not round numbers); any loosening has a stated reason in a comment
+8. [ ] Single-tile cases (`size <= BLOCK_SIZE`) assert `atol=0, rtol=0`
+9. [ ] `torch.manual_seed(42)` in every test for reproducibility
+10. [ ] Random inputs (not handcrafted) — catches more bugs
+11. [ ] No torch.matmul or PyTorch reference — compare only against original kernel
