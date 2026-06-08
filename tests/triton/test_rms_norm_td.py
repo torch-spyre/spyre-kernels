@@ -3,8 +3,9 @@
 Numerical tests for the tensor-descriptor RMS norm kernel.
 
 Compares _rms_norm_kernel_td output against the original kernel across
-various shapes and dtypes. This kernel uses tensor descriptors but keeps
-the original one-program-per-row grid (no Spyre distribution loop).
+various shapes and dtypes. This kernel uses tensor descriptors and batches
+rows across the grid: each program processes a contiguous block of rows,
+so the result must be independent of the number of programs launched.
 
 Run: pytest tests/triton/test_rms_norm_td.py -v
 Requires: GPU with triton support (tensor descriptor support)
@@ -28,9 +29,14 @@ def rms_norm_td(
     input: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
+    num_programs: int | None = None,
     BLOCK_SIZE: int = 1024,
 ) -> torch.Tensor:
-    """Launch the tensor-descriptor RMS norm kernel (one program per row)."""
+    """Launch the row-batched tensor-descriptor RMS norm kernel.
+
+    num_programs controls the grid size; rows are batched across that many
+    programs. Defaults to one program per row.
+    """
     assert weight.dim() == 1, "Weight must be 1-dimensional"
     assert input.shape[-1] == weight.shape[0]
 
@@ -44,7 +50,9 @@ def rms_norm_td(
     n_rows, n_cols = input_2d.shape
     output = torch.empty_like(input_2d)
 
-    grid = (n_rows,)
+    if num_programs is None:
+        num_programs = n_rows
+    grid = (num_programs,)
     _rms_norm_kernel_td[grid](
         input_2d,
         weight,
@@ -70,6 +78,8 @@ HIDDEN_SIZES = [
 BATCH_SIZES = [1, 4, 32, 128]
 
 DTYPES = [torch.float32, torch.float16, torch.bfloat16]
+
+PROGRAM_COUNTS = [1, 4, 16, 32, 64, 128, 256]
 
 
 # ─── Tolerances ────────────────────────────────────────────────────
@@ -136,6 +146,46 @@ class TestRMSNormTDCorrectness:
                 out_td, out_original, **TOL[dtype],
                 msg=f"Failed with BLOCK_SIZE={block_size}",
             )
+
+
+class TestRMSNormTDRowBatching:
+    """Result must be independent of how rows are batched across programs."""
+
+    @pytest.mark.parametrize("num_programs", PROGRAM_COUNTS)
+    @pytest.mark.parametrize("hidden_size", [4096, 4097])
+    def test_program_count_invariance(self, device, num_programs, hidden_size):
+        """Same output regardless of grid size (rows per program)."""
+        torch.manual_seed(42)
+        batch_size = 64
+        x = torch.randn(batch_size, hidden_size, device=device, dtype=torch.bfloat16)
+        w = torch.randn(hidden_size, device=device, dtype=torch.bfloat16)
+
+        out_original = rms_norm_original(x, w)
+        out_td = rms_norm_td(x, w, num_programs=num_programs)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
+
+    def test_more_programs_than_rows(self, device):
+        """When num_programs > n_rows, some programs have no work — must not crash."""
+        torch.manual_seed(42)
+        x = torch.randn(4, 4096, device=device, dtype=torch.float16)
+        w = torch.randn(4096, device=device, dtype=torch.float16)
+
+        out_original = rms_norm_original(x, w)
+        out_td = rms_norm_td(x, w, num_programs=32)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
+
+    def test_single_program(self, device):
+        """A single program must process all rows sequentially."""
+        torch.manual_seed(42)
+        x = torch.randn(64, 4096, device=device, dtype=torch.bfloat16)
+        w = torch.randn(4096, device=device, dtype=torch.bfloat16)
+
+        out_original = rms_norm_original(x, w)
+        out_td = rms_norm_td(x, w, num_programs=1)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
 
 class TestRMSNormTDEdgeCases:

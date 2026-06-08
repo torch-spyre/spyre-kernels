@@ -9,8 +9,10 @@
 #     tl.make_tensor_descriptor. The descriptor's block_shape handles
 #     out-of-bounds columns (zero padding on load), removing the need
 #     for explicit masks.
-#   - Grid is unchanged from the original: one program per row,
-#     grid = (n_rows,).
+#   - Row batching: the grid size is decoupled from n_rows. Each program
+#     processes a contiguous block of rows, evenly dividing n_rows across
+#     the programs in the grid. One-program-per-row is the special case
+#     where the grid has n_rows programs.
 
 import triton
 import triton.language as tl
@@ -28,9 +30,12 @@ def _rms_norm_kernel_td(
 ):
     """Compute RMS normalization: y = x / sqrt(mean(x^2) + eps) * weight.
 
-    One program per row (grid = (n_rows,)), matching the original kernel.
+    Rows are batched: each program processes a contiguous block of rows,
+    so the grid size is independent of n_rows. A grid of n_rows programs
+    recovers one row per program.
     """
-    row = tl.program_id(0)
+    pid = tl.program_id(0)
+    num_programs = tl.num_programs(0)
 
     input_desc = tl.make_tensor_descriptor(
         input_ptr, shape=[n_rows, n_cols], strides=[n_cols, 1],
@@ -45,26 +50,31 @@ def _rms_norm_kernel_td(
         block_shape=[1, BLOCK_SIZE],
     )
 
+    rows_per_program = tl.cdiv(n_rows, num_programs)
+    row_start = pid * rows_per_program
+    row_end = tl.minimum(row_start + rows_per_program, n_rows)
+
     col_tiles = tl.cdiv(n_cols, BLOCK_SIZE)
 
-    # Step 1: Compute sum of squares
-    sum_sq = tl.zeros([1, BLOCK_SIZE], dtype=tl.float32)
-    for c in range(col_tiles):
-        vals = input_desc.load([row, c * BLOCK_SIZE])
-        vals_f32 = vals.to(tl.float32)
-        sum_sq += vals_f32 * vals_f32
+    for row in range(row_start, row_end):
+        # Step 1: Compute sum of squares
+        sum_sq = tl.zeros([1, BLOCK_SIZE], dtype=tl.float32)
+        for c in range(col_tiles):
+            vals = input_desc.load([row, c * BLOCK_SIZE])
+            vals_f32 = vals.to(tl.float32)
+            sum_sq += vals_f32 * vals_f32
 
-    total_sq = tl.sum(sum_sq)
+        total_sq = tl.sum(sum_sq)
 
-    # Step 2: Compute inverse RMS
-    mean_sq = total_sq / n_cols
-    inv_rms = 1.0 / tl.sqrt(mean_sq + eps)
+        # Step 2: Compute inverse RMS
+        mean_sq = total_sq / n_cols
+        inv_rms = 1.0 / tl.sqrt(mean_sq + eps)
 
-    # Step 3: Normalize and apply weight
-    for c in range(col_tiles):
-        vals = input_desc.load([row, c * BLOCK_SIZE])
-        w = weight_desc.load([0, c * BLOCK_SIZE])
-        vals_f32 = vals.to(tl.float32)
-        w_f32 = w.to(tl.float32)
-        out_f32 = vals_f32 * inv_rms * w_f32
-        output_desc.store([row, c * BLOCK_SIZE], out_f32.to(vals.dtype))
+        # Step 3: Normalize and apply weight
+        for c in range(col_tiles):
+            vals = input_desc.load([row, c * BLOCK_SIZE])
+            w = weight_desc.load([0, c * BLOCK_SIZE])
+            vals_f32 = vals.to(tl.float32)
+            w_f32 = w.to(tl.float32)
+            out_f32 = vals_f32 * inv_rms * w_f32
+            output_desc.store([row, c * BLOCK_SIZE], out_f32.to(vals.dtype))
