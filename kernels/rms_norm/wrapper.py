@@ -5,10 +5,11 @@ from kernels._tma import ensure_triton_allocator
 from kernels.rms_norm.original import _rms_norm_kernel
 from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
 
-# Upper bound on the number of programs the row-batched kernel launches.
-# Each program processes a contiguous block of rows; when n_rows exceeds
-# this, rows are batched so the grid stays bounded.
-MAX_PROGRAMS = 32
+# Number of rows each program of the tensor-descriptor kernel processes.
+# 1 recovers one program per row. Must be a power of 2: it is the row
+# dimension of the descriptor block_shape, which tl.make_tensor_descriptor
+# requires to be a power of 2.
+ROWS_PER_PROGRAM = 1
 
 
 def rms_norm(
@@ -32,10 +33,14 @@ def rms_norm(
     BLOCK_SIZE = 1024
 
     if kernel_fn is _rms_norm_kernel_td:
-        # Row-batched tensor-descriptor kernel: the grid is decoupled from
-        # n_rows, so cap it and let each program process a block of rows.
+        # Row-batched tensor-descriptor kernel: each program handles
+        # ROWS_PER_PROGRAM rows, so the grid scales with n_rows.
+        assert ROWS_PER_PROGRAM.bit_count() == 1, (
+            "ROWS_PER_PROGRAM must be a power of 2 (descriptor block_shape "
+            f"requirement), got {ROWS_PER_PROGRAM}"
+        )
         ensure_triton_allocator()
-        grid = (min(n_rows, MAX_PROGRAMS),)
+        grid = (triton.cdiv(n_rows, ROWS_PER_PROGRAM),)
         kernel_fn[grid](
             input_2d,
             weight,
@@ -44,6 +49,7 @@ def rms_norm(
             n_cols,
             eps,
             BLOCK_SIZE=BLOCK_SIZE,
+            ROWS_PER_PROGRAM=ROWS_PER_PROGRAM,
         )
     else:
         grid = (n_rows,)

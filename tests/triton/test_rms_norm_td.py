@@ -13,6 +13,7 @@ Requires: GPU with triton support (tensor descriptor support)
 
 import pytest
 import torch
+import triton
 
 from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
 from kernels.rms_norm.wrapper import rms_norm as rms_norm_original
@@ -29,13 +30,14 @@ def rms_norm_td(
     input: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
-    num_programs: int | None = None,
+    rows_per_program: int = 1,
     BLOCK_SIZE: int = 1024,
 ) -> torch.Tensor:
     """Launch the row-batched tensor-descriptor RMS norm kernel.
 
-    num_programs controls the grid size; rows are batched across that many
-    programs. Defaults to one program per row.
+    Each program processes rows_per_program rows, so the grid has
+    cdiv(n_rows, rows_per_program) programs. rows_per_program=1 is one
+    program per row.
     """
     assert weight.dim() == 1, "Weight must be 1-dimensional"
     assert input.shape[-1] == weight.shape[0]
@@ -50,9 +52,7 @@ def rms_norm_td(
     n_rows, n_cols = input_2d.shape
     output = torch.empty_like(input_2d)
 
-    if num_programs is None:
-        num_programs = n_rows
-    grid = (num_programs,)
+    grid = (triton.cdiv(n_rows, rows_per_program),)
     _rms_norm_kernel_td[grid](
         input_2d,
         weight,
@@ -61,6 +61,7 @@ def rms_norm_td(
         n_cols,
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
+        ROWS_PER_PROGRAM=rows_per_program,
     )
     return output.reshape(original_shape)
 
@@ -79,15 +80,16 @@ BATCH_SIZES = [1, 4, 32, 128]
 
 DTYPES = [torch.float32, torch.float16, torch.bfloat16]
 
-PROGRAM_COUNTS = [1, 4, 16, 32, 64, 128, 256]
+ROWS_PER_PROGRAM = [1, 2, 4, 8, 16, 32, 64]
 
 
 # ─── Tolerances ────────────────────────────────────────────────────
 #
 # The td kernel and the original differ only in the order they accumulate
-# the float32 sum-of-squares (the td kernel keeps a [1, BLOCK_SIZE] vector
-# accumulator and reduces once at the end; the original reduces each tile
-# immediately). Float addition is non-associative, so for multi-tile rows
+# the float32 sum-of-squares (the td kernel keeps a [ROWS_PER_PROGRAM,
+# BLOCK_SIZE] tile accumulator and reduces once at the end; the original
+# reduces each tile immediately). Float addition is non-associative, so for
+# multi-tile rows
 # inv_rms can differ by a few f32 ULPs. That single scalar then scales
 # every element, and the product is rounded back to the input dtype — so
 # the per-element output differs by at most ~1 ULP of that dtype.
@@ -149,41 +151,57 @@ class TestRMSNormTDCorrectness:
 
 
 class TestRMSNormTDRowBatching:
-    """Result must be independent of how rows are batched across programs."""
+    """Result must be independent of how many rows each program processes."""
 
-    @pytest.mark.parametrize("num_programs", PROGRAM_COUNTS)
+    @pytest.mark.parametrize("rows_per_program", ROWS_PER_PROGRAM)
     @pytest.mark.parametrize("hidden_size", [4096, 4097])
-    def test_program_count_invariance(self, device, num_programs, hidden_size):
-        """Same output regardless of grid size (rows per program)."""
+    def test_rows_per_program_invariance(self, device, rows_per_program, hidden_size):
+        """Same output regardless of how many rows a program batches."""
         torch.manual_seed(42)
         batch_size = 64
         x = torch.randn(batch_size, hidden_size, device=device, dtype=torch.bfloat16)
         w = torch.randn(hidden_size, device=device, dtype=torch.bfloat16)
 
         out_original = rms_norm_original(x, w)
-        out_td = rms_norm_td(x, w, num_programs=num_programs)
+        out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
-    def test_more_programs_than_rows(self, device):
-        """When num_programs > n_rows, some programs have no work — must not crash."""
+    # rows_per_program is the descriptor block_shape[0], which the
+    # tensor-descriptor API requires to be a power of 2. n_rows=50 is not a
+    # multiple of any of these, so the last program's tile spills past
+    # n_rows and exercises OOB-row zero-padding on load and store.
+    @pytest.mark.parametrize("rows_per_program", [4, 8, 16, 32, 64])
+    def test_uneven_batching(self, device, rows_per_program):
+        """n_rows not a multiple of rows_per_program — OOB rows load as zero."""
+        torch.manual_seed(42)
+        x = torch.randn(50, 4096, device=device, dtype=torch.bfloat16)
+        w = torch.randn(4096, device=device, dtype=torch.bfloat16)
+
+        out_original = rms_norm_original(x, w)
+        out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
+
+    def test_rows_per_program_exceeds_rows(self, device):
+        """rows_per_program > n_rows — single program, OOB rows padded."""
         torch.manual_seed(42)
         x = torch.randn(4, 4096, device=device, dtype=torch.float16)
         w = torch.randn(4096, device=device, dtype=torch.float16)
 
         out_original = rms_norm_original(x, w)
-        out_td = rms_norm_td(x, w, num_programs=32)
+        out_td = rms_norm_td(x, w, rows_per_program=32)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
 
-    def test_single_program(self, device):
-        """A single program must process all rows sequentially."""
+    def test_all_rows_one_program(self, device):
+        """A single program processes every row in one tile."""
         torch.manual_seed(42)
         x = torch.randn(64, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
         out_original = rms_norm_original(x, w)
-        out_td = rms_norm_td(x, w, num_programs=1)
+        out_td = rms_norm_td(x, w, rows_per_program=64)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
