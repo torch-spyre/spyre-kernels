@@ -47,6 +47,8 @@ def rms_norm(
             output,
             n_rows,
             n_cols,
+            input_2d.stride(0),
+            output.stride(0),
             eps,
             BLOCK_SIZE=BLOCK_SIZE,
             ROWS_PER_PROGRAM=ROWS_PER_PROGRAM,

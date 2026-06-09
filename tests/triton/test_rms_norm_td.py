@@ -46,7 +46,11 @@ def rms_norm_td(
         ensure_triton_allocator()
 
     original_shape = input.shape
-    input_2d = input.reshape(-1, input.shape[-1]).contiguous()
+    # No .contiguous() on the input: its real row stride is passed straight
+    # to the descriptor, so a strided (e.g. column-sliced) 2D input exercises
+    # the non-contiguous row path. empty_like preserves those strides, so the
+    # store path is exercised strided too.
+    input_2d = input.reshape(-1, input.shape[-1])
     weight = weight.contiguous()
 
     n_rows, n_cols = input_2d.shape
@@ -59,6 +63,8 @@ def rms_norm_td(
         output,
         n_rows,
         n_cols,
+        input_2d.stride(0),
+        output.stride(0),
         eps,
         BLOCK_SIZE=BLOCK_SIZE,
         ROWS_PER_PROGRAM=rows_per_program,
@@ -275,6 +281,29 @@ class TestRMSNormTDEdgeCases:
         out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
+
+    @pytest.mark.parametrize("rows_per_program", [1, 8])
+    def test_noncontiguous_rows(self, device, rows_per_program):
+        """Input row stride > n_cols: a column-slice of a wider tensor.
+
+        full[:, :n_cols] is a 2D view whose row stride is the full width
+        (8192), not n_cols (4096). The td kernel must use that stride; a
+        kernel hardcoding strides=[n_cols, 1] would read row r from the
+        middle of physical row r-1 and produce wrong results for every
+        row after the first.
+        """
+        torch.manual_seed(42)
+        n_cols = 4096
+        full = torch.randn(64, 8192, device=device, dtype=torch.bfloat16)
+        x = full[:, :n_cols]  # strided view: stride(0) == 8192, stride(1) == 1
+        assert not x.is_contiguous() and x.stride(0) == 8192
+        w = torch.randn(n_cols, device=device, dtype=torch.bfloat16)
+
+        # Reference: same logical data, made contiguous, through the wrapper.
+        out_original = rms_norm_original(x.contiguous(), w)
+        out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
     @pytest.mark.parametrize("eps", [1e-6, 1e-5, 1e-8])
     def test_eps_values(self, device, eps):
