@@ -1,209 +1,113 @@
 ---
 name: spyre-test
-description: "Writes numerical equivalence tests for a Spyre-aware Triton kernel by comparing its output against the original kernel using random inputs. Use when the user asks to write tests, add tests, or create a test file for a Spyre kernel (spyre.py)."
+description: "Write numerical equivalence tests for a Spyre-aware kernel (spyre.py) vs the original, including distribution invariance across core counts. Produces tests/triton/test_<name>_spyre.py. Use when asked to test a Spyre kernel. For plain _td kernels, use td-test."
 ---
 
 # Spyre Kernel Test Skill
 
-Write numerical equivalence tests for a Spyre-aware Triton kernel by comparing its output against the original kernel using random inputs.
+Write numerical-equivalence tests for a Spyre-aware kernel against the original,
+including **distribution invariance** (same result for any core count). Output:
+`tests/triton/test_<name>_spyre.py`. For a `_td` kernel (no distribution loop),
+use `td-test`.
 
 ## Trigger
 
-Use when the user asks to write tests, add tests, or create a test file for a Spyre kernel (`spyre.py`).
+Use when asked to write/add tests for a `spyre.py` kernel.
 
-## Inputs
+## Pre-flight
 
-- **kernel_name**: Name of the kernel directory under `kernels/` (e.g., `matmul`, `log_softmax`)
-- The Spyre kernel is at `kernels/<name>/spyre.py`
-- The original kernel is at `kernels/<name>/original.py`
-- The existing wrapper is at `kernels/<name>/wrapper.py`
-- The output test file goes at `tests/triton/test_<name>_spyre.py`
+1. Run the KB consult in [`../_shared/preflight.md`](../_shared/preflight.md)
+   (precision notes for Spyre DL16 can shift tolerances).
+2. Read `kernels/<name>/spyre.py` (signature), `kernels/<name>/wrapper.py`
+   (launch), and `tests/triton/test_<name>.py` if present (style).
 
-## Pre-flight: Consult the Spyre Knowledge Base
+## Execution path (intended vs interim)
 
-Before writing tests, query the `spyre-kb` MCP server for relevant context:
+The right Spyre verification path is **not** "GPU triton":
 
-1. **Search for kernel-specific constraints** — call `mcp__spyre-kb__search(query="<kernel_type>")` (e.g., `"softmax"`, `"matmul"`, `"attention"`) to check for known precision issues, hardware-specific edge cases, or documented test patterns.
-2. **Search for precision/dtype guidance** — call `mcp__spyre-kb__search(query="precision DL16 BF16")` to understand dtype behavior on Spyre hardware. This informs tolerance choices — DL16 (AIU 1.0) has different mantissa/exponent than IEEE fp16.
-3. **Read relevant pages** — if search surfaces pages about tolerance, numerical stability, or test patterns for this kernel type, call `mcp__spyre-kb__read(path="<path>")` for full details.
+1. Lower Triton → TTIR → KTIR via the mlir-frontend (the Triton repo's spyre
+   backend; `dump_round_trip.py` does this end-to-end).
+2. Execute the KTIR on **ktir-cpu** (the `test_ktir_examples.py` flow).
+3. Compare against a NumPy/PyTorch reference.
 
-Use knowledge base results to:
-- Adjust tolerances if the KB documents known precision differences for this kernel type
-- Add extra edge cases if the KB documents known failure modes
-- Validate that test shapes cover hardware-relevant boundaries (e.g., stick-aligned sizes at 64 elements for 16-bit)
+The fixture framework in
+https://github.com/torch-spyre/triton/tree/main/third_party/spyre/test is the
+canonical reference, and includes IR-level assertion helpers (`assert_present`,
+`assert_result_type`, …) usable from the review side.
 
-## Pre-flight: Read Source Files
+> **Interim:** until that path is wired into this repo's test harness, tests run
+> the kernel on GPU/CUDA (the `@pytest.fixture device` + `torch.cuda` pattern
+> below) and compare against the original kernel. Write tests against the
+> original-kernel reference so they port cleanly to the ktir-cpu path later.
 
-1. Read `kernels/<name>/spyre.py` to understand the kernel signature (pointers, runtime args, constexprs)
-2. Read `kernels/<name>/wrapper.py` to understand how the original kernel is launched (shapes, dtypes, output allocation)
-3. Read `tests/triton/test_<name>.py` (if it exists) to match the existing test style and parameter choices
+## Launching the kernel — reuse `wrapper.py`
 
-## Test File Structure
+**Launch both kernels through the existing `kernels/<name>/wrapper.py`** (which
+dispatches to the Spyre kernel, typically via a `kernel_fn=` argument) — do not
+copy its launch logic into the test. A forked launch path drifts from
+production and must be updated twice when the signature changes.
 
-```python
-# SPDX-License-Identifier: Apache-2.0
-"""
-Numerical tests for the Spyre-aware <name> kernel.
+Distribution-invariance tests need to vary `num_cores`, and the wrapper should
+**accept `num_cores` as a parameter** so the test drives it through the same
+launch path the production code uses. If the wrapper does not yet expose
+`num_cores` (or another parameter a test needs), **extend `wrapper.py`** rather
+than building a parallel launch helper in the test.
 
-Compares <kernel_function>_spyre output against the original kernel
-across various shapes and core counts.
+## Test categories
 
-Run: pytest tests/triton/test_<name>_spyre.py -v
-Requires: GPU with triton support (tensor descriptor support)
-"""
+### 1. Correctness vs original
 
-import pytest
-import torch
-import triton
+Parametrize over representative shapes (include non-divisible), seed with
+`torch.manual_seed(42)`, random inputs, `torch.testing.assert_close`.
 
-from kernels.<name>.spyre import <kernel_function>_spyre
-from kernels.<name>.wrapper import <wrapper_function> as <wrapper_function>_original
-
-
-# ─── Helpers ──────────────────────────────────────────────────────
-
-def <wrapper_function>_spyre(
-    <args matching original wrapper>,
-    num_cores: int = 32,
-    <BLOCK constexprs with defaults>,
-) -> torch.Tensor:
-    """Launch the Spyre kernel with a fixed grid."""
-    ...
-    grid = (num_cores,)
-    <kernel_function>_spyre[grid](...)
-    return output
-
-
-# ─── Test Parameters ───────────────────────────────────────────────
-
-<SHAPES, SIZES, etc. — include divisible and non-divisible values>
-
-CORE_COUNTS = [1, 4, 16, 32]
-
-
-# ─── Fixtures ──────────────────────────────────────────────────────
-
-@pytest.fixture
-def device():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
-    return torch.device("cuda")
-
-
-# ─── Tests ─────────────────────────────────────────────────────────
-
-class Test<Name>SpyreCorrectness:
-    """Spyre kernel must match original kernel."""
-    ...
-
-class Test<Name>SpyreDistribution:
-    """Verify correctness across different core counts."""
-    ...
-
-class Test<Name>SpyreEdgeCases:
-    """Edge cases for the Spyre kernel."""
-    ...
-```
-
-## Test Categories
-
-### 1. Correctness (compare against original)
-
-- Parametrize over representative shapes from the existing test file
-- Use `torch.manual_seed(42)` for reproducibility
-- Generate random inputs with appropriate dtypes
-- Call both the original wrapper and the Spyre wrapper
-- Compare with `torch.testing.assert_close(out_spyre, out_original, atol=..., rtol=...)`
-
-**Tolerances: size them to the dtype's ULP, not a round number.**
-
-When the Spyre kernel and the original differ *only* in floating-point
-operation order (e.g. a reduction accumulated across tiles vs. reduced
-per-tile), the inputs are identical and both compute the same math — so
-the output can differ by at most ~1 ULP of the *output* dtype. The
-tolerance should reflect that bound, not a habitual `1e-2`/`1e-3`. A
-reviewer will (rightly) push back on a tolerance that is looser than the
-ULP justification claims.
-
-1 ULP near 1.0 is `2^-mantissa_bits`:
-
-| output dtype | mantissa bits | ~1 ULP | tolerance |
-|--------------|---------------|--------|-----------|
-| float32      | 23            | ~1e-7  | `atol=1e-5, rtol=1e-5` |
-| float16      | 10            | ~1e-3  | `atol=1e-3, rtol=1e-3` |
-| bfloat16     | 7             | ~8e-3  | `atol=8e-3, rtol=8e-3` |
-
-Define these once as a per-dtype `TOL` dict and look up `TOL[dtype]` at
-each assertion, so parametrized tests stay consistent and the rationale
-lives in one place:
+**Tolerances — size to the output dtype's ULP**, via a per-dtype `TOL` dict
+(same rationale as `td-test`):
 
 ```python
-# Kernels differ only in f32 reduction order → single inv_rms scalar →
-# rounded back to the output dtype, so per-element error is <=1 ULP.
 TOL = {
     torch.float32: dict(atol=1e-5, rtol=1e-5),
     torch.float16: dict(atol=1e-3, rtol=1e-3),
     torch.bfloat16: dict(atol=8e-3, rtol=8e-3),
 }
-...
-torch.testing.assert_close(out_spyre, out_original, **TOL[dtype])
 ```
 
-Adjust *up* from these only with a stated reason — e.g. the divergence is
-not pure reordering (different algorithm, more accumulation steps, an
-`inv_rms` precomputed-then-multiplied that adds round-off), or the KB
-documents a known precision difference for this kernel type or for Spyre
-DL16. Write the reason in a comment next to the tolerance. **f32 outputs
-should be near-exact** even from f16/bf16 inputs, because reductions
-accumulate in f32 — keep `1e-5`.
+Loosen *up* only with a stated reason. **Important — matmul / `tl.dot`
+reductions:** `tl.dot` and a NumPy `@` reference accumulate the K dimension in
+different orders, so a `1e-5` rtol is unrealistic — the project's
+`matmul/default` fixture uses **`rtol≈1e-2`**. Align matmul-style tolerances with
+that fixture, not the ULP table. **Single-tile cases** (`size <= BLOCK_SIZE`)
+have no reduction-order divergence — assert `atol=0, rtol=0`.
 
-**Single-tile cases are bitwise-identical.** When a row/problem fits in one
-tile (`size <= BLOCK_SIZE`), there is no reduction-order difference at all,
-so assert `atol=0, rtol=0` rather than a ULP tolerance — a loose tolerance
-there would hide a real regression.
+### 2. Distribution invariance
 
-**Verify on GPU before trusting the number.** ULP bounds are an estimate;
-run the test on CCC (see the ccc-test skill) and confirm the tightest
-dtype/largest-shape case (e.g. bf16 at the biggest hidden size, most tiles)
-passes. If it brushes the bound, the divergence isn't pure reordering —
-investigate rather than loosening reflexively.
-
-### 2. Distribution invariance (varying core counts)
-
-- Run the Spyre kernel with `num_cores` in `[1, 4, 16, 32]`
-- Compare each result against the original kernel
-- This verifies the distribution loop works for any partitioning
-
-Also test:
-- More cores than work items (some cores idle)
-- Single core (sequential execution)
+Run the Spyre kernel with `num_cores` in `[1, 4, 16, 32]`; compare each against
+the original. Also test: **more cores than work items** (idle cores) and
+**single core** (sequential). This verifies the distribution loop for any
+partitioning.
 
 ### 3. Edge cases
 
-Always include:
-- **Non-divisible shapes**: dimensions not multiples of BLOCK sizes
-- **Minimum size**: inputs smaller than one tile
-- **Asymmetric shapes**: one dimension much larger than another
-- **Kernel-specific edges**: e.g., topk=1, single batch, vocab < BLOCK_SIZE
+Non-divisible shapes; minimum size (< one tile); asymmetric shapes; zero input
+(eps); large values; kernel-specific edges (topk=1, single batch, vocab <
+BLOCK_SIZE).
 
-## Spyre Wrapper Conventions
+## Spyre wrapper conventions
 
-The Spyre wrapper differs from the original wrapper:
-- **Grid**: fixed `(num_cores,)` instead of derived from problem size
-- **No stride args**: Spyre kernels assume contiguous layout (assert it)
-- **Explicit constexprs**: pass BLOCK sizes directly (no autotune)
-- **Extra runtime args**: `num_requests`, `num_elements`, etc. that replace grid-size-equals-problem-size patterns
+- **Grid:** fixed `(num_cores,)`, not derived from problem size.
+- **No stride args** if the kernel assumes contiguous layout (assert it).
+- **Explicit constexprs** (no autotune).
+- **Extra runtime args** (`num_requests`, `num_elements`) that replace
+  grid-size-equals-problem-size patterns.
 
 ## Checklist
 
-1. [ ] Test file at `tests/triton/test_<name>_spyre.py`
-2. [ ] Helper wrapper launches Spyre kernel with configurable `num_cores`
-3. [ ] Correctness tests parametrized over shapes matching existing tests
-4. [ ] Distribution tests with `CORE_COUNTS = [1, 4, 16, 32]`
-5. [ ] Edge cases: non-divisible, minimum size, asymmetric
-6. [ ] All comparisons use `torch.testing.assert_close` against original kernel
-7. [ ] Tolerances sized to the output dtype's ULP via a `TOL` dict (not round numbers); any loosening has a stated reason in a comment
-8. [ ] Single-tile cases (`size <= BLOCK_SIZE`) assert `atol=0, rtol=0`
-9. [ ] `torch.manual_seed(42)` in every test for reproducibility
-10. [ ] Random inputs (not handcrafted) — catches more bugs
-11. [ ] No torch.matmul or PyTorch reference — compare only against original kernel
+1. [ ] Test at `tests/triton/test_<name>_spyre.py`
+2. [ ] Both kernels launched via `wrapper.py` with configurable `num_cores`
+       (extend the wrapper if it doesn't expose it — no forked launch path)
+3. [ ] Correctness parametrized over shapes; distribution tests over `[1,4,16,32]`
+4. [ ] Edge cases: non-divisible, min size, asymmetric, more-cores-than-work,
+       single-core
+5. [ ] Compare with `torch.testing.assert_close` against the original only
+6. [ ] Per-dtype `TOL`; matmul-style `tl.dot` uses fixture rtol (~1e-2), not 1e-5
+7. [ ] Single-tile cases assert `atol=0, rtol=0`
+8. [ ] `torch.manual_seed(42)` everywhere; random inputs
