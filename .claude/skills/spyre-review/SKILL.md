@@ -82,6 +82,16 @@ shipped in place of the clean form is the FAIL.
 Same math, accumulator dtype, output dtype conversion, reduction structure; no
 dropped operations; all original tensors handled.
 
+### Step 6 — Conversion notes (WARN, not FAIL)
+
+`spyre-convert` requires `kernels/<name>/conversion-notes.md` with a
+`## Spyre-aware conversion` section recording the conversion decisions
+(invariant handling, scratchpad batching, gap sites, signature changes). Verify
+it exists and reflects the kernel as reviewed. Flag a **WARN** if the file is
+missing, lacks the Spyre-aware section, or is stale relative to the code —
+documentation hygiene, not a correctness defect, so it does not by itself make
+the kernel non-compliant.
+
 ## Report format
 
 ```
@@ -103,6 +113,9 @@ dropped operations; all original tensors handled.
 
 ### Correctness vs original
 **Status:** PASS / FAIL — <discrepancies>
+
+### Conversion notes
+**Status:** OK / WARN — <present and current / missing / stale>
 
 ### Overall: COMPLIANT / NON-COMPLIANT
 ```

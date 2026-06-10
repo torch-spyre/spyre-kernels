@@ -72,6 +72,15 @@ Same math, same accumulator dtype (usually f32), same output dtype conversion,
 same reduction structure, no dropped operations (activations, clamps,
 normalization), all original tensors handled.
 
+### Step 5 — Conversion notes (WARN, not FAIL)
+
+`td-convert` requires `kernels/<name>/conversion-notes.md` with a
+`## Tensor-descriptor conversion` section recording what changed and why. Verify
+it exists and reflects the kernel as reviewed (signature changes, dropped masks,
+scalar-load resolution). Flag a **WARN** if the file is missing, lacks the TD
+section, or is stale relative to the code — documentation hygiene, not a
+correctness defect, so it does not by itself make the kernel non-compliant.
+
 ## Report format
 
 ```
@@ -87,6 +96,10 @@ normalization), all original tensors handled.
 ### Correctness vs original
 **Status:** PASS / FAIL
 - <discrepancies>
+
+### Conversion notes
+**Status:** OK / WARN
+- <present and current / missing / stale — what's absent>
 
 ### Overall: COMPLIANT / NON-COMPLIANT
 ```
