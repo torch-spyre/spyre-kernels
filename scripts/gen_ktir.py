@@ -32,27 +32,21 @@ inputs; see ``kernels/rms_norm/lower.py`` for the canonical example::
 
 Usage::
 
+This needs the **spyre-enabled** Triton build (stock PyPI Triton has no spyre
+backend). Rather than install it persistently, layer it in for the single
+generation run with ``uv run --with``, which uses a separate ephemeral env and
+leaves the project ``.venv`` (stock PyPI Triton) untouched::
+
     # Regenerate every variant of every kernel with a lower.py driver:
-    .venv/bin/python scripts/gen_ktir.py
+    GIT_PAT=$(gh auth token) uv run \
+        --with "triton @ git+https://github.com/torch-spyre/triton@<sha>" \
+        python scripts/gen_ktir.py
 
-    # Regenerate every variant of one kernel:
-    .venv/bin/python scripts/gen_ktir.py rms_norm
+    # ... one kernel / one variant / CI drift guard:
+    ... python scripts/gen_ktir.py rms_norm
+    ... python scripts/gen_ktir.py rms_norm:tensor_descriptor
+    ... python scripts/gen_ktir.py --check
 
-    # Regenerate one specific variant:
-    .venv/bin/python scripts/gen_ktir.py rms_norm:tensor_descriptor
-
-    # CI drift guard: fail if any committed <variant>.ktir is stale:
-    .venv/bin/python scripts/gen_ktir.py --check
-
-IMPORTANT: this needs the **spyre-enabled** Triton build, which is the opt-in
-author tier. Install it into your project venv with::
-
-    GIT_PAT=<github token> scripts/install-ktir-gen.sh
-
-then run with ``.venv/bin/python`` directly, never ``uv run`` — ``uv run``
-re-syncs the env (base tier) and replaces the spyre Triton with the stock PyPI
-build, which has no ``spyre`` backend. A plain ``uv sync`` likewise switches
-back to the PyPI base tier.
 """
 
 import argparse
@@ -72,17 +66,13 @@ _ROUND_TRIP_MODULE = "scripts._spyre.round_trip"
 
 def _require_spyre_backend() -> None:
     """Fail early with an actionable message if the spyre Triton backend
-    isn't installed (i.e. the base tier env, before install-ktir-gen.sh)."""
+    isn't importable (i.e. run in the base venv without the --with layer)."""
     try:
         import triton.backends.spyre.compiler  # noqa: F401,PLC0415
     except ImportError as exc:
         raise SystemExit(
             "KTIR generation needs the spyre-enabled Triton build, which is "
-            "not installed in this environment.\n"
-            "Install the author tier into this venv with:\n"
-            "    GIT_PAT=<github token> scripts/install-ktir-gen.sh\n"
-            "then run with .venv/bin/python (not `uv run`). A plain `uv sync` "
-            "switches back to the stock PyPI triton (base tier).\n"
+            "not present in this environment.\n"
             f"(import error: {exc})"
         )
 

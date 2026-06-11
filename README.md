@@ -74,23 +74,22 @@ Then run the tests:
 Lowering a Triton kernel to KTIR (`scripts/gen_ktir.py`) needs the
 **spyre-enabled** Triton build from
 [`torch-spyre/triton`](https://github.com/torch-spyre/triton) — only kernel
-authors need this. It builds from source (a few minutes) and requires a GitHub
-token for the LLVM fetch. Install it **into your existing project venv**:
+authors need it, and only for this one task. Rather than install it into your
+`.venv` (which would mutate the shared base-tier env), layer it in for the
+single run with `uv run --with`. It builds from source on first use (a few
+minutes; needs a GitHub token for the LLVM fetch) and runs in a separate
+ephemeral env, leaving `.venv` on stock PyPI Triton:
 
 ```bash
-GIT_PAT=$(gh auth token) scripts/install-ktir-gen.sh
+SPYRE_TRITON="triton @ git+https://github.com/torch-spyre/triton@5b467467c883c53ec7a8a89f9e89cfd55241034b"
+
+# Regenerate every variant of every kernel with a lower.py driver:
+GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
+
+# One kernel / one variant:
+GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py rms_norm
+GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py rms_norm:tensor_descriptor
+
+# CI drift guard — fail if any committed <variant>.ktir is stale:
+GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py --check
 ```
-
-Then regenerate KTIR:
-
-```bash
-# Regenerate every kernel that has a lower.py driver:
-.venv/bin/python scripts/gen_ktir.py
-
-# CI drift guard — fail if any committed kernel.ktir is stale:
-.venv/bin/python scripts/gen_ktir.py --check
-```
-
-A plain `uv sync` switches the venv back to stock PyPI Triton (the base tier).
-Run `gen_ktir.py` with `.venv/bin/python` directly — never `uv run`, which
-re-syncs to the base tier and drops the spyre backend.
