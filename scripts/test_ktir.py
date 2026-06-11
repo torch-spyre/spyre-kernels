@@ -18,14 +18,17 @@ from ktir_cpu.mlir_frontend.parser import MLIRFrontendParser
 
 KERNELS = {
     "rms_norm": {
-        "func": "rms_norm_fwd",
+        # Generated KTIR (scripts/gen_ktir.py): positional argN, constexprs
+        # (BLOCK_SIZE, ROWS_PER_PROGRAM) baked in, weight shaped [1, n_cols].
+        "ktir": "tensor_descriptor.ktir",
+        "func": "_rms_norm_kernel_td",
         "kwargs": lambda: dict(
-            X=np.random.default_rng(42).standard_normal((32, 4096)).astype(np.float16),
-            W=np.ones(4096, dtype=np.float16),
-            Y=np.zeros((32, 4096), dtype=np.float16),
-            N=4096,
-            eps=np.float16(1e-5),
-            BLOCK_SIZE=1024,
+            arg0=np.random.default_rng(42).standard_normal((32, 4096)).astype(np.float16),
+            arg1=np.ones((1, 4096), dtype=np.float16),
+            arg2=np.zeros((32, 4096), dtype=np.float16),
+            arg3=np.int32(32),
+            arg4=np.int32(4096),
+            arg5=np.float16(1e-5),
         ),
     },
     "silu_and_mul": {
@@ -189,7 +192,9 @@ def main():
     print("-" * 52)
 
     for name, cfg in KERNELS.items():
-        mlir_path = kernels_dir / name / "kernel.ktir"
+        # Generated KTIR is named after its source variant (e.g.
+        # tensor_descriptor.ktir); unmigrated kernels still use kernel.ktir.
+        mlir_path = kernels_dir / name / cfg.get("ktir", "kernel.ktir")
         if not mlir_path.exists():
             print(f"{name:<28} {'SKIP':<8} {'SKIP':<8} {'—':<8}")
             continue
