@@ -21,10 +21,11 @@ def rms_norm(
 ) -> torch.Tensor:
     """Launch the RMS-norm kernel selected by `kernel_fn`.
 
-    `rows_per_program` and `block_size` tune the tensor-descriptor kernel's
-    tiling (ignored by the original kernel, which has no row batching). They are
-    exposed so tests can sweep them through this one launch path rather than
-    re-implementing the launch.
+    `block_size` tunes both kernels' column tiling. `rows_per_program` tunes the
+    tensor-descriptor kernel's row batching and has no meaning for the original
+    kernel (one program per row); passing a non-default value on the original
+    path is rejected rather than silently ignored. Both are exposed so tests can
+    sweep them through this one launch path rather than re-implementing it.
 
     The input is reshaped to 2D but **not** forced contiguous — its real row
     stride is passed to the kernel, so a strided (e.g. column-sliced) input is
@@ -65,6 +66,13 @@ def rms_norm(
             ROWS_PER_PROGRAM=rows_per_program,
         )
     else:
+        # The original kernel has no row batching, so rows_per_program is
+        # meaningless here. Reject a non-default value instead of silently
+        # dropping it, so a caller tuning the wrong kernel finds out.
+        assert rows_per_program == ROWS_PER_PROGRAM, (
+            "rows_per_program only applies to the tensor-descriptor kernel "
+            f"(_rms_norm_kernel_td); got {rows_per_program} for {kernel_fn}"
+        )
         grid = (n_rows,)
         kernel_fn[grid](
             input_2d,
