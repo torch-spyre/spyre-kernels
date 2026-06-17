@@ -6,6 +6,12 @@ the scratchpad by processing less data per iteration than it could. Low
 utilization leaves performance on the table: the scratchpad exists to hold
 working data, and using 1 KB of 2 MB underexploits the hardware.
 
+The lever is not just *filling* the scratchpad but *reusing* it — keeping
+working data resident and reusing the same region as much as possible so the
+kernel re-fetches from HBM as little as possible. Batching (below) is the common
+way to get that reuse: process more independent work per iteration so the data
+already loaded does more work before it is evicted.
+
 This is a **performance** concern (WARN, not a correctness FAIL).
 
 ## Detecting under-use
