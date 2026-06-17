@@ -2,10 +2,15 @@
 """
 Numerical tests for the tensor-descriptor RMS norm kernel.
 
-Compares _rms_norm_kernel_td output against the original kernel across
-various shapes and dtypes. This kernel uses tensor descriptors and batches
-rows across the grid: each program processes a contiguous block of rows,
-so the result must be independent of the number of programs launched.
+Compares _rms_norm_kernel_td output against the original kernel across various
+shapes and dtypes. Both kernels are launched through kernels/rms_norm/wrapper.py
+(via its kernel_fn= dispatch) — no forked launch path. The wrapper exposes
+rows_per_program / block_size so these tests can sweep the descriptor tiling
+through the same code the production path uses.
+
+The td kernel batches rows across the grid: each program processes a contiguous
+block of rows, so the result must be independent of how many rows each program
+handles.
 
 Run: pytest tests/triton/test_rms_norm_td.py -v
 Requires: GPU with triton support (tensor descriptor support)
@@ -13,57 +18,24 @@ Requires: GPU with triton support (tensor descriptor support)
 
 import pytest
 import torch
-import triton
 
 from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
-from kernels.rms_norm.wrapper import rms_norm as rms_norm_original
-
-try:
-    from kernels._tma import ensure_triton_allocator
-except ImportError:  # pragma: no cover
-    ensure_triton_allocator = None
+from kernels.rms_norm.wrapper import rms_norm
 
 
-# ─── Helpers ──────────────────────────────────────────────────────
+# ─── Launch helpers (both go through the wrapper) ──────────────────
 
-def rms_norm_td(
-    input: torch.Tensor,
-    weight: torch.Tensor,
-    eps: float = 1e-6,
-    rows_per_program: int = 1,
-    BLOCK_SIZE: int = 1024,
-) -> torch.Tensor:
-    """Launch the row-batched tensor-descriptor RMS norm kernel.
+def rms_norm_ref(input, weight, **kwargs):
+    """Reference: original kernel via the wrapper."""
+    return rms_norm(input, weight, **kwargs)
 
-    Each program processes rows_per_program rows, so the grid has
-    cdiv(n_rows, rows_per_program) programs. rows_per_program=1 is one
-    program per row.
-    """
-    assert weight.dim() == 1, "Weight must be 1-dimensional"
-    assert input.shape[-1] == weight.shape[0]
 
-    if ensure_triton_allocator is not None:
-        ensure_triton_allocator()
-
-    original_shape = input.shape
-    input_2d = input.reshape(-1, input.shape[-1]).contiguous()
-    weight = weight.contiguous()
-
-    n_rows, n_cols = input_2d.shape
-    output = torch.empty_like(input_2d)
-
-    grid = (triton.cdiv(n_rows, rows_per_program),)
-    _rms_norm_kernel_td[grid](
-        input_2d,
-        weight,
-        output,
-        n_rows,
-        n_cols,
-        eps,
-        BLOCK_SIZE=BLOCK_SIZE,
-        ROWS_PER_PROGRAM=rows_per_program,
+def rms_norm_td(input, weight, rows_per_program=1, block_size=1024, **kwargs):
+    """Tensor-descriptor kernel via the wrapper's kernel_fn dispatch."""
+    return rms_norm(
+        input, weight, kernel_fn=_rms_norm_kernel_td,
+        rows_per_program=rows_per_program, block_size=block_size, **kwargs,
     )
-    return output.reshape(original_shape)
 
 
 # ─── Test Parameters ───────────────────────────────────────────────
@@ -89,9 +61,8 @@ ROWS_PER_PROGRAM = [1, 2, 4, 8, 16, 32, 64]
 # the float32 sum-of-squares (the td kernel keeps a [ROWS_PER_PROGRAM,
 # BLOCK_SIZE] tile accumulator and reduces once at the end; the original
 # reduces each tile immediately). Float addition is non-associative, so for
-# multi-tile rows
-# inv_rms can differ by a few f32 ULPs. That single scalar then scales
-# every element, and the product is rounded back to the input dtype — so
+# multi-tile rows inv_rms can differ by a few f32 ULPs. That single scalar then
+# scales every element, and the product is rounded back to the input dtype — so
 # the per-element output differs by at most ~1 ULP of that dtype.
 #
 # 1 ULP near 1.0 is 2^-mantissa_bits: ~1e-3 for fp16 (10-bit mantissa),
@@ -124,29 +95,28 @@ class TestRMSNormTDCorrectness:
         torch.manual_seed(42)
         x = torch.randn(batch_size, hidden_size, device=device, dtype=dtype)
         w = torch.randn(hidden_size, device=device, dtype=dtype)
-        eps = 1e-6
 
-        out_original = rms_norm_original(x, w, eps=eps)
-        out_td = rms_norm_td(x, w, eps=eps)
+        out_original = rms_norm_ref(x, w)
+        out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(out_td, out_original, **TOL[dtype])
 
     @pytest.mark.parametrize("hidden_size", HIDDEN_SIZES)
     @pytest.mark.parametrize("dtype", DTYPES, ids=lambda d: str(d).split(".")[-1])
     def test_varying_block_size(self, device, hidden_size, dtype):
-        """Verify correctness with different BLOCK_SIZE constexprs."""
+        """Verify correctness with different block_size values."""
         torch.manual_seed(42)
         batch_size = 16
         x = torch.randn(batch_size, hidden_size, device=device, dtype=dtype)
         w = torch.randn(hidden_size, device=device, dtype=dtype)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
 
         for block_size in [256, 512, 1024, 2048]:
-            out_td = rms_norm_td(x, w, BLOCK_SIZE=block_size)
+            out_td = rms_norm_td(x, w, block_size=block_size)
             torch.testing.assert_close(
                 out_td, out_original, **TOL[dtype],
-                msg=f"Failed with BLOCK_SIZE={block_size}",
+                msg=f"Failed with block_size={block_size}",
             )
 
 
@@ -162,7 +132,7 @@ class TestRMSNormTDRowBatching:
         x = torch.randn(batch_size, hidden_size, device=device, dtype=torch.bfloat16)
         w = torch.randn(hidden_size, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
@@ -178,7 +148,7 @@ class TestRMSNormTDRowBatching:
         x = torch.randn(50, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
@@ -189,7 +159,7 @@ class TestRMSNormTDRowBatching:
         x = torch.randn(4, 4096, device=device, dtype=torch.float16)
         w = torch.randn(4096, device=device, dtype=torch.float16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w, rows_per_program=32)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
@@ -200,7 +170,7 @@ class TestRMSNormTDRowBatching:
         x = torch.randn(64, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w, rows_per_program=64)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
@@ -215,8 +185,8 @@ class TestRMSNormTDEdgeCases:
         x = torch.randn(4, 1, device=device, dtype=torch.float32)
         w = torch.ones(1, device=device, dtype=torch.float32)
 
-        out_original = rms_norm_original(x, w)
-        out_td = rms_norm_td(x, w, BLOCK_SIZE=64)
+        out_original = rms_norm_ref(x, w)
+        out_td = rms_norm_td(x, w, block_size=64)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float32])
 
@@ -226,19 +196,19 @@ class TestRMSNormTDEdgeCases:
         x = torch.randn(1, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
     def test_hidden_smaller_than_block(self, device):
-        """hidden_size < BLOCK_SIZE: descriptor handles OOB with zero padding."""
+        """hidden_size < block_size: descriptor handles OOB with zero padding."""
         torch.manual_seed(42)
         x = torch.randn(8, 64, device=device, dtype=torch.float16)
         w = torch.randn(64, device=device, dtype=torch.float16)
 
-        out_original = rms_norm_original(x, w)
-        out_td = rms_norm_td(x, w, BLOCK_SIZE=1024)
+        out_original = rms_norm_ref(x, w)
+        out_td = rms_norm_td(x, w, block_size=1024)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
 
@@ -248,7 +218,7 @@ class TestRMSNormTDEdgeCases:
         x = torch.randn(2, 8, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
@@ -258,7 +228,7 @@ class TestRMSNormTDEdgeCases:
         x = torch.zeros(4, 4096, device=device, dtype=torch.float32)
         w = torch.ones(4096, device=device, dtype=torch.float32)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(
@@ -271,10 +241,33 @@ class TestRMSNormTDEdgeCases:
         x = torch.randn(4, 4096, device=device, dtype=torch.float16) * 1000.0
         w = torch.randn(4096, device=device, dtype=torch.float16)
 
-        out_original = rms_norm_original(x, w)
+        out_original = rms_norm_ref(x, w)
         out_td = rms_norm_td(x, w)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.float16])
+
+    @pytest.mark.parametrize("rows_per_program", [1, 8])
+    def test_noncontiguous_rows(self, device, rows_per_program):
+        """Input row stride > n_cols: a column-slice of a wider tensor.
+
+        full[:, :n_cols] is a 2D view whose row stride is the full width
+        (8192), not n_cols (4096). The wrapper passes that stride straight to
+        the kernel; a kernel hardcoding strides=[n_cols, 1] would read row r
+        from the middle of physical row r-1 and produce wrong results for every
+        row after the first.
+        """
+        torch.manual_seed(42)
+        n_cols = 4096
+        full = torch.randn(64, 8192, device=device, dtype=torch.bfloat16)
+        x = full[:, :n_cols]  # strided view: stride(0) == 8192, stride(1) == 1
+        assert not x.is_contiguous() and x.stride(0) == 8192
+        w = torch.randn(n_cols, device=device, dtype=torch.bfloat16)
+
+        # Reference: same logical data, made contiguous.
+        out_original = rms_norm_ref(x.contiguous(), w)
+        out_td = rms_norm_td(x, w, rows_per_program=rows_per_program)
+
+        torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])
 
     @pytest.mark.parametrize("eps", [1e-6, 1e-5, 1e-8])
     def test_eps_values(self, device, eps):
@@ -283,7 +276,7 @@ class TestRMSNormTDEdgeCases:
         x = torch.randn(8, 4096, device=device, dtype=torch.bfloat16)
         w = torch.randn(4096, device=device, dtype=torch.bfloat16)
 
-        out_original = rms_norm_original(x, w, eps=eps)
+        out_original = rms_norm_ref(x, w, eps=eps)
         out_td = rms_norm_td(x, w, eps=eps)
 
         torch.testing.assert_close(out_td, out_original, **TOL[torch.bfloat16])

@@ -9,6 +9,10 @@
 #     tl.make_tensor_descriptor. The descriptor's block_shape handles
 #     out-of-bounds rows and columns (zero padding on load), removing the
 #     need for explicit masks.
+#   - input_row_stride / output_row_stride are kept as runtime args and
+#     passed straight into the descriptor strides, preserving the original's
+#     support for strided (non-contiguous) rows. Column stride is 1, matching
+#     the original's contiguous row_start_ptr + col_idx indexing.
 #   - Row batching: each program processes ROWS_PER_PROGRAM rows at once.
 #     The rows are loaded together as a [ROWS_PER_PROGRAM, BLOCK_SIZE] tile
 #     and reduced/normalized with vectorized ops over the row axis.
@@ -29,6 +33,8 @@ def _rms_norm_kernel_td(
     output_ptr,
     n_rows,
     n_cols,
+    input_row_stride,
+    output_row_stride,
     eps,
     BLOCK_SIZE: tl.constexpr,
     ROWS_PER_PROGRAM: tl.constexpr,
@@ -48,11 +54,11 @@ def _rms_norm_kernel_td(
     row_start = pid * ROWS_PER_PROGRAM
 
     input_desc = tl.make_tensor_descriptor(
-        input_ptr, shape=[n_rows, n_cols], strides=[n_cols, 1],
+        input_ptr, shape=[n_rows, n_cols], strides=[input_row_stride, 1],
         block_shape=[ROWS_PER_PROGRAM, BLOCK_SIZE],
     )
     output_desc = tl.make_tensor_descriptor(
-        output_ptr, shape=[n_rows, n_cols], strides=[n_cols, 1],
+        output_ptr, shape=[n_rows, n_cols], strides=[output_row_stride, 1],
         block_shape=[ROWS_PER_PROGRAM, BLOCK_SIZE],
     )
     weight_desc = tl.make_tensor_descriptor(
