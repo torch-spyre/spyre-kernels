@@ -48,7 +48,7 @@ jobs:
 
   cpu-ktir-tests:
     name: CPU — ktir-cpu validator (T2)
-    runs-on: [self-hosted, linux, x86_64]
+    runs-on: [linux, x86_64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
