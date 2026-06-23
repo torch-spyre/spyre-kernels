@@ -63,6 +63,12 @@ def device():
     return torch.device("cuda")
 
 
+@pytest.fixture(autouse=True)
+def seed():
+    """Seed the RNG before every test for reproducible inputs."""
+    torch.manual_seed(42)
+
+
 # ─── Tests ─────────────────────────────────────────────────────────
 
 class TestSiluAndMulTDCorrectness:
@@ -72,7 +78,6 @@ class TestSiluAndMulTDCorrectness:
     @pytest.mark.parametrize("batch_size", BATCH_SIZES)
     @pytest.mark.parametrize("dtype", DTYPES, ids=lambda dt: str(dt).split(".")[-1])
     def test_numerical_equivalence(self, device, batch_size, d, dtype):
-        torch.manual_seed(42)
         x = torch.randn(batch_size, 2 * d, device=device, dtype=dtype)
 
         out_original = silu_ref(x)
@@ -89,7 +94,6 @@ class TestSiluAndMulTDEdgeCases:
         """d=1: single output column per row (input width 2). The descriptor
         block_shape last dim is BLOCK_SIZE (>=16 bytes) regardless of d, so
         the 16-byte rule holds; the d=1 shape boundary zero-fills the rest."""
-        torch.manual_seed(42)
         x = torch.randn(4, 2, device=device, dtype=torch.float32)
 
         out_original = silu_ref(x)
@@ -99,7 +103,6 @@ class TestSiluAndMulTDEdgeCases:
 
     def test_single_row(self, device):
         """batch_size=1: only one row."""
-        torch.manual_seed(42)
         x = torch.randn(1, 2 * 4096, device=device, dtype=torch.bfloat16)
 
         out_original = silu_ref(x)
@@ -110,7 +113,6 @@ class TestSiluAndMulTDEdgeCases:
     @pytest.mark.parametrize("d", [127, 1023, 4097])
     def test_asymmetric_nondivisible(self, device, d):
         """d not a multiple of BLOCK_SIZE — column tail is partial."""
-        torch.manual_seed(42)
         x = torch.randn(17, 2 * d, device=device, dtype=torch.float16)
 
         out_original = silu_ref(x)
@@ -120,7 +122,6 @@ class TestSiluAndMulTDEdgeCases:
 
     def test_3d_input(self, device):
         """3D input (batch, seq_len, 2*d) — flattened to 2D by the wrapper."""
-        torch.manual_seed(42)
         x = torch.randn(2, 8, 2 * 4096, device=device, dtype=torch.bfloat16)
 
         out_original = silu_ref(x)
@@ -140,7 +141,6 @@ class TestSiluAndMulTDEdgeCases:
 
     def test_large_values(self, device):
         """Large inputs exercise the clamp path on both gate and up."""
-        torch.manual_seed(42)
         x = torch.randn(4, 2 * 1024, device=device, dtype=torch.float32) * 100.0
 
         out_original = silu_ref(x, limit=7.0)
@@ -151,7 +151,6 @@ class TestSiluAndMulTDEdgeCases:
     @pytest.mark.parametrize("limit", [1.0, 7.0, 100.0])
     def test_different_limits(self, device, limit):
         """Different clamp limits must match the original."""
-        torch.manual_seed(42)
         x = torch.randn(8, 2 * 4096, device=device, dtype=torch.bfloat16)
 
         out_original = silu_ref(x, limit=limit)
@@ -167,7 +166,6 @@ class TestSiluAndMulTDEdgeCases:
         sees a packed buffer; this test confirms the td kernel matches the
         original on the same logical data.
         """
-        torch.manual_seed(42)
         d = 2048
         full = torch.randn(32, 2 * d + 512, device=device, dtype=torch.bfloat16)
         x = full[:, : 2 * d]
