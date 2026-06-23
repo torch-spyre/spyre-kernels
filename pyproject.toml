@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.2.6",
     "torch>=2.4.0",
-    "triton>=3.0.0",
+    "triton>=3.7.0",
 ]
 
 [project.optional-dependencies]
@@ -17,7 +17,7 @@ test = [
 ]
 
 [tool.uv.sources]
-ktir-cpu = { git = "https://github.com/torch-spyre/ktir-cpu", rev = "main" }
+ktir-cpu = { git = "https://github.com/torch-spyre/ktir-cpu", rev = "6460317acf36c70957ee8d36261517b73159b915" }
 
 [build-system]
 requires = ["hatchling"]
