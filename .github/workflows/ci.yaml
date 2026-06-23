@@ -32,7 +32,7 @@ env:
 jobs:
   gpu-td-tests:
     name: GPU — TD kernels vs reference (T0)
-    runs-on: [self-hosted, linux, x86_64, gpu]
+    runs-on: [linux, x86_64, gpu]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
