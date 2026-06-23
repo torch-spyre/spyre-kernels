@@ -27,6 +27,7 @@ Run:
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from ktir_cpu import KTIRInterpreter
 
@@ -71,6 +72,7 @@ def _run(X: np.ndarray, W: np.ndarray) -> np.ndarray:
     return outputs["arg2"]
 
 
+@pytest.mark.ktir_cpu
 def test_rms_norm_ktir():
     """Generated RMSNorm KTIR matches the NumPy reference within f16 tol."""
     rng = np.random.default_rng(42)
@@ -88,6 +90,7 @@ def test_rms_norm_ktir():
     print(f"PASS: max abs error = {max_err:.6f}")
 
 
+@pytest.mark.ktir_cpu
 def test_rms_norm_ktir_zeros():
     """RMSNorm of all-zeros input should produce all zeros."""
     X = np.zeros((NUM_ROWS, N_COLS), dtype=np.float16)

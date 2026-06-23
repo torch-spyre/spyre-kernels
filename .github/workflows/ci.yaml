@@ -1,0 +1,69 @@
+# Per-PR CI. Two checks run in parallel on different nodes:
+#
+#   gpu-td-tests   (GPU node)  — T0: tensor-descriptor kernels vs the
+#                                vLLM-derived / PyTorch reference (tests/triton/).
+#   cpu-ktir-tests (CPU node)  — T2: KTIR regenerated from kernel source, then
+#                                validated on the ktir-cpu simulator
+#                                (tests/ktir/, ktir_cpu-marked subset).
+#
+# The CPU job does NOT trust the committed .ktir: it regenerates every variant
+# with scripts/gen_ktir.py before testing, so the simulator always validates
+# KTIR freshly lowered from the current kernel source. That lowering needs the
+# spyre-enabled Triton build, layered in per-run with `uv run --with`.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # spyre-enabled Triton build used to lower kernels to KTIR — latest main.
+  SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@main"
+
+jobs:
+  gpu-td-tests:
+    name: GPU — TD kernels vs reference (T0)
+    runs-on: [self-hosted, linux, x86_64, gpu]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+
+      - name: Install deps
+        run: uv sync --extra test
+
+      - name: Run tensor-descriptor equivalence tests
+        run: uv run pytest tests/triton/ -v
+
+  cpu-ktir-tests:
+    name: CPU — ktir-cpu validator (T2)
+    runs-on: [self-hosted, linux, x86_64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+
+      - name: Install deps
+        run: uv sync --extra test
+
+      # Regenerate KTIR from the current kernel source rather than trusting the
+      # committed .ktir. Lowering needs the spyre-enabled Triton build, layered
+      # in for this one run.
+      - name: Regenerate KTIR from source
+        run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
+
+      - name: Run ktir-cpu validation tests
+        run: uv run pytest tests/ktir/ -m ktir_cpu -v
