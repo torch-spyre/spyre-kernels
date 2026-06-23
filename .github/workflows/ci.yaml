@@ -60,9 +60,15 @@ jobs:
         run: uv sync --extra test
 
       # Regenerate KTIR from the current kernel source rather than trusting the
-      # committed .ktir. Lowering needs the spyre-enabled Triton build, layered
-      # in for this one run.
+      # committed .ktir. Lowering builds the spyre-enabled Triton (layered in
+      # for this one run); its setup_mlir.py downloads a prebuilt LLVM/MLIR
+      # artifact from torch-spyre/ktir-mlir-frontend and needs a token for that
+      # fetch. That artifact lives in a *different* repo, so the per-repo
+      # GITHUB_TOKEN can't read it — provide a PAT with read access via the
+      # GIT_PAT secret (the env var setup_mlir.py reads first).
       - name: Regenerate KTIR from source
+        env:
+          GIT_PAT: ${{ secrets.GIT_PAT }}
         run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
 
       - name: Run ktir-cpu validation tests
