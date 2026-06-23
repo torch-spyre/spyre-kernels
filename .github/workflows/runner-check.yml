@@ -1,0 +1,14 @@
+name: Runner Check
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/runner-check.yml
+
+jobs:
+  ping-internal:
+    runs-on: [self-hosted, ai-kernels-group]
+    steps:
+      - name: Ping w3.ibm.com
+        run: ping -c 4 w3.ibm.com
