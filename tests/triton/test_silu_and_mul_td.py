@@ -49,7 +49,7 @@ HALF_HIDDEN_SIZES = [
     4097,    # not a multiple of BLOCK_SIZE — exercises the column tail
 ]
 
-BATCH_SIZES = [1, 4, 32, 128]
+BATCH_SIZES = [1, 3, 4, 15, 17, 27, 32, 65, 79, 111, 128]
 
 DTYPES = [torch.float32, torch.float16, torch.bfloat16]
 
