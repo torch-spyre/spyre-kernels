@@ -63,7 +63,7 @@ jobs:
       # artifact from torch-spyre/ktir-mlir-frontend and needs a token for that fetch.
       - name: Regenerate KTIR from source
         env:
-          GIT_PAT: ${{ secrets.mlir_frontend_pat_token }}
+          GIT_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
 
       - name: Run ktir-cpu validation tests
