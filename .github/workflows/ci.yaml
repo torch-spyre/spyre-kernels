@@ -66,6 +66,13 @@ jobs:
       - name: Regenerate KTIR from source
         env:
           GIT_PAT: ${{ secrets.GITHUB_TOKEN }}
+          # Cap build parallelism: the spyre Triton source build defaults to
+          # -j(2 * nproc), and on the self-hosted runner that peaks RAM during
+          # the LLVM link and OOM-kills the runner agent ("lost communication
+          # with the server"). MAX_JOBS bounds compile jobs;
+          # TRITON_PARALLEL_LINK_JOBS bounds the RAM-heavy link step.
+          MAX_JOBS: "4"
+          TRITON_PARALLEL_LINK_JOBS: "1"
         run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
 
       - name: Run ktir-cpu validation tests
