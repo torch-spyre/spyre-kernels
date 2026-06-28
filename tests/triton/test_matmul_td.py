@@ -20,8 +20,10 @@ import torch
 from kernels.matmul.tensor_descriptor import _matmul_kernel_td
 from kernels.matmul.wrapper import matmul
 
-# Kernel-vs-kernel tolerance for unit-scale inputs (see module docstring).
-ATOL, RTOL = 1e-2, 1e-2
+# Kernel-vs-kernel tolerance (see module docstring). Both cast to f16 at the
+# end, so the only gap is f32 accumulation order rounding into f16 — a couple
+# of f16 ULPs at most (f16 mantissa ~1e-3 relative).
+ATOL, RTOL = 1e-3, 1e-3
 
 
 # ─── Launch helpers (both go through the wrapper) ──────────────────
