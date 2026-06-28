@@ -75,5 +75,10 @@ jobs:
           TRITON_PARALLEL_LINK_JOBS: "1"
         run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
 
+      # Run only the ktir_cpu-marked tests (NumPy reference, no GPU). Collection
+      # imports every tests/ktir/ module, so those modules must import cleanly
+      # on a CPU host — see kernels/matmul/original.py:is_cuda(), which guards
+      # the driver access so the import-time autotune decorator doesn't crash
+      # when no GPU backend is active.
       - name: Run ktir-cpu validation tests
         run: uv run pytest tests/ktir/ -m ktir_cpu -v
