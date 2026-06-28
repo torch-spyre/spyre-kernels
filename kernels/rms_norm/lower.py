@@ -26,6 +26,8 @@ _TD_SIGNATURE = {
     "output_ptr": "*fp16",
     "n_rows": "i32",
     "n_cols": "i32",
+    "input_row_stride": "i32",
+    "output_row_stride": "i32",
     "eps": "fp16",
     "BLOCK_SIZE": "i32",
     "ROWS_PER_PROGRAM": "i32",
