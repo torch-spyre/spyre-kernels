@@ -30,3 +30,6 @@ packages = ["kernels", "scripts"]
 testpaths = ["tests"]
 addopts = "-v"
 python_files = ["test_*.py"]
+markers = [
+    "ktir_cpu: ktir validation test whose reference is CPU-only (no GPU needed)",
+]

@@ -1,0 +1,87 @@
+# Per-PR CI. Two checks run in parallel on different nodes:
+#
+#   gpu-td-tests   (GPU node)  — T0: tensor-descriptor kernels vs the
+#                                vLLM-derived / PyTorch reference (tests/triton/).
+#   cpu-ktir-tests (CPU node)  — T2: KTIR regenerated from kernel source, then
+#                                validated on the ktir-cpu simulator
+#                                (tests/ktir/, ktir_cpu-marked subset).
+#
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # spyre-enabled Triton build used to lower kernels to KTIR. Pinned to the
+  # sha the committed *.ktir were generated with (README pin); @main currently
+  # breaks the make_tensor_descriptor lowering path (_unflatten_ir on None).
+  SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@5b467467c883c53ec7a8a89f9e89cfd55241034b"
+
+jobs:
+# GPU tests - uncomment when we have a GPU worker available
+#  gpu-td-tests:
+#    name: GPU — TD kernels vs reference (T0)
+#    runs-on: [linux, x86_64, gpu]
+#    timeout-minutes: 120
+#    steps:
+#      - uses: actions/checkout@v7
+#
+#      - name: Install uv
+#        uses: astral-sh/setup-uv@v7
+#
+#      - name: Install deps
+#        run: uv sync --extra test
+#
+#      - name: Run tensor-descriptor equivalence tests
+#        run: uv run pytest tests/triton/ -v
+
+  cpu-ktir-tests:
+    name: CPU — ktir-cpu validator (T2)
+    runs-on: [linux, x86_64]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install deps
+        run: uv sync --extra test
+
+      # Drift guard: regenerate KTIR from the current kernel source and fail if
+      # it differs from the committed *.ktir (no write). The test below reads
+      # the committed tensor_descriptor.ktir, so --check ensures that file is
+      # in sync with the kernel rather than silently stale.
+      # The setup_mlir.py (run while building $SPYRE_TRITON) downloads a prebuilt
+      # LLVM/MLIR artifact from torch-spyre/ktir-mlir-frontend and needs a token
+      # for that fetch.
+      - name: Check committed KTIR is in sync with source
+        env:
+          GIT_PAT: ${{ secrets.GITHUB_TOKEN }}
+          # Cap build parallelism: the spyre Triton source build defaults to
+          # -j(2 * nproc), and on the self-hosted runner that peaks RAM during
+          # the LLVM link and OOM-kills the runner agent ("lost communication
+          # with the server"). MAX_JOBS bounds compile jobs;
+          # TRITON_PARALLEL_LINK_JOBS bounds the RAM-heavy link step.
+          MAX_JOBS: "4"
+          TRITON_PARALLEL_LINK_JOBS: "1"
+        run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py --check
+
+      # Validate the committed KTIR on the ktir-cpu simulator. Scope collection
+      # to the rms_norm file: the other tests/ktir/ modules import a kernel's
+      # original.py at module scope, whose import-time autotune touches triton's
+      # active driver and crashes on this CPU runner — and -m alone can't avoid
+      # that (pytest still imports deselected modules). Add CPU-safe ktir test
+      # files here as they gain the ktir_cpu marker.
+      - name: Run ktir-cpu validation tests
+        run: uv run pytest tests/ktir/test_rms_norm.py -m ktir_cpu -v
