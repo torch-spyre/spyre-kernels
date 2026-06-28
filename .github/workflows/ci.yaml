@@ -6,10 +6,6 @@
 #                                validated on the ktir-cpu simulator
 #                                (tests/ktir/, ktir_cpu-marked subset).
 #
-# The CPU job does NOT trust the committed .ktir: it regenerates every variant
-# with scripts/gen_ktir.py before testing, so the simulator always validates
-# KTIR freshly lowered from the current kernel source. That lowering needs the
-# spyre-enabled Triton build, layered in per-run with `uv run --with`.
 
 name: ci
 
