@@ -17,14 +17,7 @@ import triton.language as tl
 
 
 def is_cuda():
-    # Guard the driver access: on a CPU-only host (e.g. CI collecting tests
-    # without a GPU) no backend is active and get_current_target() raises.
-    # Treat that as "not cuda" so importing this module — and the autotune
-    # decorator below, which calls this at import time — never crashes.
-    try:
-        return triton.runtime.driver.active.get_current_target().backend == "cuda"
-    except RuntimeError:
-        return False
+    return triton.runtime.driver.active.get_current_target().backend == "cuda"
 
 
 def get_cuda_autotune_config():

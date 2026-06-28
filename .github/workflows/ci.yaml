@@ -62,9 +62,14 @@ jobs:
       - name: Install deps
         run: uv sync --extra test
 
-      # The setup_mlir.py downloads a prebuilt LLVM/MLIR
-      # artifact from torch-spyre/ktir-mlir-frontend and needs a token for that fetch.
-      - name: Regenerate KTIR from source
+      # Drift guard: regenerate KTIR from the current kernel source and fail if
+      # it differs from the committed *.ktir (no write). The test below reads
+      # the committed tensor_descriptor.ktir, so --check ensures that file is
+      # in sync with the kernel rather than silently stale.
+      # The setup_mlir.py (run while building $SPYRE_TRITON) downloads a prebuilt
+      # LLVM/MLIR artifact from torch-spyre/ktir-mlir-frontend and needs a token
+      # for that fetch.
+      - name: Check committed KTIR is in sync with source
         env:
           GIT_PAT: ${{ secrets.GITHUB_TOKEN }}
           # Cap build parallelism: the spyre Triton source build defaults to
@@ -74,12 +79,13 @@ jobs:
           # TRITON_PARALLEL_LINK_JOBS bounds the RAM-heavy link step.
           MAX_JOBS: "4"
           TRITON_PARALLEL_LINK_JOBS: "1"
-        run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
+        run: uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py --check
 
-      # Run only the ktir_cpu-marked tests (NumPy reference, no GPU). Collection
-      # imports every tests/ktir/ module, so those modules must import cleanly
-      # on a CPU host — see kernels/matmul/original.py:is_cuda(), which guards
-      # the driver access so the import-time autotune decorator doesn't crash
-      # when no GPU backend is active.
+      # Validate the committed KTIR on the ktir-cpu simulator. Scope collection
+      # to the rms_norm file: the other tests/ktir/ modules import a kernel's
+      # original.py at module scope, whose import-time autotune touches triton's
+      # active driver and crashes on this CPU runner — and -m alone can't avoid
+      # that (pytest still imports deselected modules). Add CPU-safe ktir test
+      # files here as they gain the ktir_cpu marker.
       - name: Run ktir-cpu validation tests
-        run: uv run pytest tests/ktir/ -m ktir_cpu -v
+        run: uv run pytest tests/ktir/test_rms_norm.py -m ktir_cpu -v
