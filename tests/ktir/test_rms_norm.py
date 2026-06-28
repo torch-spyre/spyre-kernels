@@ -6,12 +6,14 @@ The KTIR under test is *generated* from the Triton kernel source by
 function name and signature mirror the lowered kernel exactly:
 
     func.func @_rms_norm_kernel_td(
-        %arg0: index,  // input_ptr   [n_rows, n_cols] f16
-        %arg1: index,  // weight_ptr  [1, n_cols]      f16
-        %arg2: index,  // output_ptr  [n_rows, n_cols] f16
+        %arg0: index,  // input_ptr          [n_rows, n_cols] f16
+        %arg1: index,  // weight_ptr         [1, n_cols]      f16
+        %arg2: index,  // output_ptr         [n_rows, n_cols] f16
         %arg3: i32,    // n_rows
         %arg4: i32,    // n_cols
-        %arg5: f16,    // eps
+        %arg5: i32,    // input_row_stride
+        %arg6: i32,    // output_row_stride
+        %arg7: f16,    // eps
     )
 
 ``BLOCK_SIZE`` and ``ROWS_PER_PROGRAM`` are constexprs baked into the
@@ -62,12 +64,14 @@ def _run(X: np.ndarray, W: np.ndarray) -> np.ndarray:
     Y = np.zeros((NUM_ROWS, N_COLS), dtype=np.float16)
     outputs = interp.execute_function(
         FUNC,
-        arg0=X,                      # input  [n_rows, n_cols]
-        arg1=W.reshape(1, N_COLS),   # weight [1, n_cols]
-        arg2=Y,                      # output [n_rows, n_cols]
+        arg0=X,                       # input  [n_rows, n_cols]
+        arg1=W.reshape(1, N_COLS),    # weight [1, n_cols]
+        arg2=Y,                       # output [n_rows, n_cols]
         arg3=np.int32(NUM_ROWS),
         arg4=np.int32(N_COLS),
-        arg5=EPS,
+        arg5=np.int32(N_COLS),        # input_row_stride  (contiguous rows)
+        arg6=np.int32(N_COLS),        # output_row_stride (contiguous rows)
+        arg7=EPS,
     )
     return outputs["arg2"]
 
