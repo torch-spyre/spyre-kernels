@@ -32,21 +32,22 @@ env:
   SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@5b467467c883c53ec7a8a89f9e89cfd55241034b"
 
 jobs:
-  gpu-td-tests:
-    name: GPU — TD kernels vs reference (T0)
-    runs-on: [linux, x86_64, gpu]
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Install deps
-        run: uv sync --extra test
-
-      - name: Run tensor-descriptor equivalence tests
-        run: uv run pytest tests/triton/ -v
+# GPU tests - uncomment when we have a GPU worker available
+#  gpu-td-tests:
+#    name: GPU — TD kernels vs reference (T0)
+#    runs-on: [linux, x86_64, gpu]
+#    timeout-minutes: 120
+#    steps:
+#      - uses: actions/checkout@v7
+#
+#      - name: Install uv
+#        uses: astral-sh/setup-uv@v7
+#
+#      - name: Install deps
+#        run: uv sync --extra test
+#
+#      - name: Run tensor-descriptor equivalence tests
+#        run: uv run pytest tests/triton/ -v
 
   cpu-ktir-tests:
     name: CPU — ktir-cpu validator (T2)
