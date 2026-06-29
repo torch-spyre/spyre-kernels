@@ -103,7 +103,6 @@ def matmul_kernel(
         # Meta-parameters
         BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,  #
         GROUP_SIZE_M: tl.constexpr,  #
-        ACTIVATION: tl.constexpr  #
 ):
     """Kernel for computing the matmul C = A x B.
     A has shape (M, K), B has shape (K, N) and C has shape (M, N)

@@ -91,19 +91,6 @@ class TestMatmulTDCorrectness:
 
         torch.testing.assert_close(out_td, ref, atol=5e-2, rtol=1e-2)
 
-    def test_activation_leaky_relu(self, device):
-        """leaky_relu activation must match the original."""
-        torch.manual_seed(42)
-        M, N, K = 256, 256, 256
-        a = torch.randn((M, K), device=device, dtype=torch.float16)
-        b = torch.randn((K, N), device=device, dtype=torch.float16)
-
-        out_original = matmul_ref(a, b, activation="leaky_relu")
-        out_td = matmul_td(a, b, activation="leaky_relu")
-
-        torch.testing.assert_close(out_td, out_original, atol=ATOL, rtol=RTOL)
-
-
 class TestMatmulTDEdgeCases:
     """Edge cases for the tensor-descriptor kernel."""
 

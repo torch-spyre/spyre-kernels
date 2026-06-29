@@ -15,6 +15,11 @@ test = [
     "pytest>=8.0",
     "ktir-cpu",
 ]
+# Stage 2 of the helion-convert skill (autotune-emit Triton). Needs a
+# TMA-capable GPU at runtime; install with `uv pip install -e .[helion]`.
+helion = [
+    "helion>=1.2.0",
+]
 
 [tool.uv.sources]
 ktir-cpu = { git = "https://github.com/torch-spyre/ktir-cpu", rev = "6460317acf36c70957ee8d36261517b73159b915" }

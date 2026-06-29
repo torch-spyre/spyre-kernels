@@ -6,7 +6,7 @@ from kernels.matmul.original import matmul_kernel
 
 
 def matmul(
-    a: torch.Tensor, b: torch.Tensor, activation: str = "",
+    a: torch.Tensor, b: torch.Tensor,
     kernel_fn=matmul_kernel,
 ) -> torch.Tensor:
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
@@ -22,6 +22,5 @@ def matmul(
         a.stride(0), a.stride(1),
         b.stride(0), b.stride(1),
         c.stride(0), c.stride(1),
-        ACTIVATION=activation,
     )
     return c
