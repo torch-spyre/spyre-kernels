@@ -164,10 +164,7 @@ def matmul_kernel(
         # Advance the ptrs to the next K block.
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += BLOCK_SIZE_K * stride_bk
-    # You can fuse arbitrary activation functions here
-    # while the accumulator is still in FP32!
-    if ACTIVATION == "leaky_relu":
-        accumulator = leaky_relu(accumulator)
+
     c = accumulator.to(tl.float16)
 
     # -----------------------------------------------------------
