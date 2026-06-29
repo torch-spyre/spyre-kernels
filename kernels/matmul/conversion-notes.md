@@ -18,3 +18,20 @@
   to `[M, N]`, so the valid output region is unaffected.
 - Signature, autotune config, grid, and grouped-pid scheduling preserved
   unchanged; the wrapper can call this form via its `kernel_fn` parameter.
+
+## Helion round-trip
+
+- `original.py` → `helion_kernel.py` (`matmul_helion`) → autotune-emit
+  (`indexing=tensor_descriptor` pinned) → arg-ify → `triton_helion_roundtrip.py`.
+- Stage 1 mapping: `hl.tile([m, n])` for the parallel M/N output axes, inner
+  `hl.tile(k)` reduction, `torch.addmm` accumulating in f32, cast to f16 on store.
+- Stage 2 ran on an H100. Winning config:
+  `block_sizes=[64, 128, 64]`, `indexing='tensor_descriptor'`,
+  `l2_groupings=[8]`, `num_stages=6`, `num_warps=4`, `pid_type='flat'`.
+  `make_tensor_descriptor occurrences: 2` — descriptors fired (one per input;
+  output uses a masked `tl.store`). ~187/921 autotune configs were skipped on
+  ptxas register-pressure failures (`maxnreg=64` too low) — autotuner discards
+  them, winner is unaffected.
+- Stage 4 constexpr naming: `_BLOCK_SIZE_0`→`BLOCK_M` (cdiv(m,·), a_desc rows),
+  `_BLOCK_SIZE_1`→`BLOCK_N` (cdiv(n,·), b_desc cols), `_BLOCK_SIZE_2`→`BLOCK_K`
+  (`tl.range(0, k, ·)` reduction step) — matching the original's tile names.
