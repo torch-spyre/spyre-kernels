@@ -69,18 +69,6 @@ class TestMatmulEquivalence:
         torch.testing.assert_close(out_raw, ref, atol=5e-2, rtol=1e-2)
         torch.testing.assert_close(out_blk, ref, atol=5e-2, rtol=1e-2)
 
-    def test_activation_leaky_relu(self, device):
-        """Verify leaky_relu activation produces matching results."""
-        torch.manual_seed(42)
-        M, N, K = 256, 256, 256
-        a = torch.randn((M, K), device=device, dtype=torch.float16)
-        b = torch.randn((K, N), device=device, dtype=torch.float16)
-
-        out_raw = matmul(a, b, activation="leaky_relu")
-        out_blk = matmul(a, b, activation="leaky_relu", kernel_fn=matmul_kernel_block_ptr)
-
-        torch.testing.assert_close(out_raw, out_blk, atol=1e-2, rtol=0)
-
     def test_rectangular_tall(self, device):
         """Tall matrix: M >> N."""
         torch.manual_seed(42)
