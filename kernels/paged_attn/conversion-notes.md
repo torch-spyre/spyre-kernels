@@ -33,6 +33,7 @@ to the Spyre indirect-access tile (`ktdp.construct_indirect_access_tile`).
   `(BLK_B, KV_BLOCK, BLK_H, D)` directly, with **no reshape** of the index or of
   the gathered result. This maps the gather onto the Spyre indirect-access tile
   more directly than the flatten/reshape of the base form.
+- The representation of the physical layout needs to be revisited.
 
 ## Shared structure (both variants)
 
