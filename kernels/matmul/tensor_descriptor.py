@@ -86,9 +86,6 @@ def _matmul_kernel_td(
         b = b_desc.load([off_k, off_n])
         accumulator = tl.dot(a, b, accumulator)
 
-    # Fuse activation while the accumulator is still fp32.
-    if ACTIVATION == "leaky_relu":
-        accumulator = leaky_relu(accumulator)
     c = accumulator.to(tl.float16)
 
     # -----------------------------------------------------------
