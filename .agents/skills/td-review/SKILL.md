@@ -21,6 +21,30 @@ Run the KB consult in [`../_shared/preflight.md`](../_shared/preflight.md).
 - Review: `kernels/<name>/tensor_descriptor.py`
 - Compare against: `kernels/<name>/original.py`
 
+## Step 0 — Portable or not?
+
+If `tensor_descriptor.py` is **absent**, td-convert declared the kernel
+non-portable. There is no code to review — review the *verdict* instead. Open
+`conversion-notes.md` and check the `## Tensor-descriptor conversion` section
+claims non-portability and names a blocking access. Then verify the wall is
+real against `original.py` and `descriptor-rules.md` §4–§5:
+
+- **§4 wall** — an un-widenable last dim. Confirm the named access is a genuine
+  scalar on a 1D tensor (or otherwise cannot reach ≥ 16 bytes by batching or
+  layout change). If a second dim *could* widen it, the verdict is **wrong** —
+  the kernel is convertible. FAIL the verdict.
+- **§5 wall** — multiplicative mixing, dimension fusion, non-delinearizable, or
+  ≥ 2 indirect dims with no single-`gather` form. Confirm the index genuinely
+  cannot be expressed as `desc.gather`/`desc.scatter` on a multi-dim descriptor.
+  A per-row/per-program index into a structured tensor is portable — a verdict
+  citing that is **wrong**. FAIL the verdict.
+
+Report **VERDICT: non-portable CONFIRMED** (wall real, named, no convertible
+form) or **VERDICT: WRONG** (a descriptor form exists — name it). Then stop;
+skip Steps 1–4 (no code), still run Step 5 on the notes.
+
+If `tensor_descriptor.py` is **present**, proceed to Step 1.
+
 ## Review procedure
 
 ### Step 1 — Descriptor API usage
@@ -82,6 +106,25 @@ section, or is stale relative to the code — documentation hygiene, not a
 correctness defect, so it does not by itself make the kernel non-compliant.
 
 ## Report format
+
+Non-portable verdict (no `tensor_descriptor.py`):
+
+```
+## Tensor-Descriptor Review: <kernel_name>
+
+### Portability verdict
+**VERDICT: non-portable CONFIRMED / WRONG**
+- Blocking access: <named access + §4/§5 rule>
+- Real wall / convertible via <desc.gather|batched layout|...>
+
+### Conversion notes
+**Status:** OK / WARN
+- <present and current / missing / stale>
+
+### Overall: COMPLIANT (correctly non-portable) / NON-COMPLIANT (convertible)
+```
+
+Converted kernel (`tensor_descriptor.py` present):
 
 ```
 ## Tensor-Descriptor Review: <kernel_name>

@@ -106,3 +106,44 @@ restructuring can make the last dimension ≥ 16 bytes, then **the kernel is not
 portable to tensor descriptors** — say so and stop; do not ship a
 `block_shape=[..., 1]` descriptor with a gap annotation, because it will not
 trace.
+
+## 5. Data-dependent gather / scatter — use `desc.gather` / `desc.scatter`
+
+A runtime-indexed access — `x[idx]` where `idx` was loaded from memory, or a
+scatter to a runtime-computed position — is **not** a reason to give up on
+descriptors. `desc.load([...])` takes only trace-time offsets, but descriptors
+also expose:
+
+```python
+desc.gather(indices, offset)            # indices: tensor of coords on the indirect dim
+desc.scatter(value, indices, offset)    # offset:  scalar coord on the direct dims
+```
+
+`indices` supplies the coordinate for **one** (indirect) dimension; `offset`
+gives the direct-dimension coordinate. This is the canonical form for paged
+KV-cache, MoE expert routing, and per-row index lookups, and it maps 1:1 to the
+backend's indirect-access tile (`ktdp.construct_indirect_access_tile`). So the
+fix for a data-dependent gather is **express it as `desc.gather` on a
+multi-dim descriptor**, not leave it as a raw `tl.load(ptr + idx)`.
+
+**What genuinely cannot be expressed (then, and only then, non-portable):**
+- **Multiplicative mixing of the indirect index.** The loaded index must be a
+  *standalone* per-dimension coordinate. `X_flat[IDX[m] * K + k]` is illegal —
+  the index is scaled and linearized. The fix is usually to *not* pre-flatten:
+  keep the tensor multi-dimensional (`X_2d[IDX[m], k]`) so the index stays its
+  own coordinate. If you only have a flat pointer and the offset truly mixes the
+  loaded index with a stride, it will not lower.
+- **Dimension fusion with an indirect dim** — a fused axis where one component is
+  indirect cannot be represented; the indirect axis must stay structurally
+  separate.
+- **Non-delinearizable patterns** — `address = f(loaded_value)` for a
+  non-invertible `f` (hash, content-addressable lookup). Outside the IR's
+  expressiveness entirely.
+
+Only if the access falls into one of those three (and cannot be restructured out
+of it) is the kernel **non-portable** — then say so, name the access, and stop;
+do not ship a raw-pointer gather with an annotation. But the common case —
+a per-row / per-program index into an otherwise structured tensor — **is**
+portable via `desc.gather` / `desc.scatter`. Reach for those before declaring
+defeat. (The gathered tile still owes §4: gather a ≥ 16-byte slice, not a single
+element.)
