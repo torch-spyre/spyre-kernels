@@ -39,27 +39,35 @@ def _mrope_kernel_td(
     # Load this token's row from each section, then select the section
     # range with tl.where and sum (sections are disjoint -> additive).
     # ----------------------------------------------------------------
+    # cos/sin: (3, num_tokens, half_rd) flattened to 2D (3*num_tokens, half_rd),
+    # so this token's t/h/w section rows are (sec*num_tokens + pid). A 2D block
+    # [1, BLOCK_HALF] load returns [1, BLOCK_HALF] directly — no reshape. A 3D
+    # descriptor + reshape-to-1D instead folds into the load and trips the spyre
+    # lowering ('access tile shape must match result tensor shape'). The
+    # [1, BLOCK_HALF] row broadcasts over the head axis of the q/k tiles below.
     cos_desc = tl.make_tensor_descriptor(
         cos,
-        shape=[3, num_tokens, half_rd],
-        strides=[num_tokens * half_rd, half_rd, 1],
-        block_shape=[1, 1, BLOCK_HALF],
+        shape=[3 * num_tokens, half_rd],
+        strides=[half_rd, 1],
+        block_shape=[1, BLOCK_HALF],
     )
     sin_desc = tl.make_tensor_descriptor(
         sin,
-        shape=[3, num_tokens, half_rd],
-        strides=[num_tokens * half_rd, half_rd, 1],
-        block_shape=[1, 1, BLOCK_HALF],
+        shape=[3 * num_tokens, half_rd],
+        strides=[half_rd, 1],
+        block_shape=[1, BLOCK_HALF],
     )
 
-    t_cos_row = cos_desc.load([0, pid, 0]).reshape(BLOCK_HALF)
-    h_cos_row = cos_desc.load([1, pid, 0]).reshape(BLOCK_HALF)
-    w_cos_row = cos_desc.load([2, pid, 0]).reshape(BLOCK_HALF)
-    t_sin_row = sin_desc.load([0, pid, 0]).reshape(BLOCK_HALF)
-    h_sin_row = sin_desc.load([1, pid, 0]).reshape(BLOCK_HALF)
-    w_sin_row = sin_desc.load([2, pid, 0]).reshape(BLOCK_HALF)
+    t_cos_row = cos_desc.load([pid, 0])
+    h_cos_row = cos_desc.load([num_tokens + pid, 0])
+    w_cos_row = cos_desc.load([2 * num_tokens + pid, 0])
+    t_sin_row = sin_desc.load([pid, 0])
+    h_sin_row = sin_desc.load([num_tokens + pid, 0])
+    w_sin_row = sin_desc.load([2 * num_tokens + pid, 0])
 
-    cos_offsets = tl.arange(0, BLOCK_HALF)
+    # Rows are [1, BLOCK_HALF] (see above), so keep the lane offsets/masks on
+    # the same row axis: shape [1, BLOCK_HALF]. Matches so tl.where lines up.
+    cos_offsets = tl.arange(0, BLOCK_HALF).reshape(1, BLOCK_HALF)
     if is_interleaved:
         h_mask = ((cos_offsets % 3) == 1) & (cos_offsets <= 3 * mrope_section_h)
         w_mask = ((cos_offsets % 3) == 2) & (cos_offsets <= 3 * mrope_section_w)
@@ -106,11 +114,9 @@ def _mrope_kernel_td(
     k_tile_2 = k_desc.load([pid, 0, 1, 0]).reshape(pad_n_kh, BLOCK_HALF).to(sin_row.dtype)
 
     # y = [x1, x2] * [cos, cos] + [-x2, x1] * [sin, sin]
-    cos_b = cos_row[None, :]
-    sin_b = sin_row[None, :]
-
-    new_q_tile_1 = q_tile_1 * cos_b - q_tile_2 * sin_b
-    new_q_tile_2 = q_tile_2 * cos_b + q_tile_1 * sin_b
+    # cos_row/sin_row are [1, BLOCK_HALF] and broadcast over the head axis.
+    new_q_tile_1 = q_tile_1 * cos_row - q_tile_2 * sin_row
+    new_q_tile_2 = q_tile_2 * cos_row + q_tile_1 * sin_row
     q_desc.store(
         [pid, 0, 0, 0],
         new_q_tile_1.reshape(1, pad_n_qh, 1, BLOCK_HALF).to(q_ptr.dtype.element_ty),
@@ -120,8 +126,8 @@ def _mrope_kernel_td(
         new_q_tile_2.reshape(1, pad_n_qh, 1, BLOCK_HALF).to(q_ptr.dtype.element_ty),
     )
 
-    new_k_tile_1 = k_tile_1 * cos_b - k_tile_2 * sin_b
-    new_k_tile_2 = k_tile_2 * cos_b + k_tile_1 * sin_b
+    new_k_tile_1 = k_tile_1 * cos_row - k_tile_2 * sin_row
+    new_k_tile_2 = k_tile_2 * cos_row + k_tile_1 * sin_row
     k_desc.store(
         [pid, 0, 0, 0],
         new_k_tile_1.reshape(1, pad_n_kh, 1, BLOCK_HALF).to(k_ptr.dtype.element_ty),
