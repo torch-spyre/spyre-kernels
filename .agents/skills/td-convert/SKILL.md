@@ -30,6 +30,24 @@ Run the KB consult in [`../_shared/preflight.md`](../_shared/preflight.md).
 
 ## Procedure
 
+0. **Scan every access and pick its descriptor form.** Before writing anything,
+   list the original's loads/stores and map each to a descriptor op — most are
+   not the plain `desc.load`/`desc.store` (see `descriptor-rules.md`):
+   - affine/contiguous tile → `desc.load([off...])` / `desc.store(...)` (§1)
+   - **data-dependent gather/scatter** — `tl.load(ptr + idx)` where `idx` was
+     loaded at runtime (e.g. `token_id = tl.load(...)` then
+     `tl.load(row_ptr + token_id)`) → `desc.gather(indices, offset)` /
+     `desc.scatter(value, indices, offset)` on a multi-dim descriptor (§5).
+     This IS portable — do not mistake it for non-portable.
+
+   A kernel is **non-portable** only if an access hits a genuine wall (§4–§5):
+   a last dim that cannot reach ≥ 16 bytes, or an indirect index that mixes
+   multiplicatively / fuses dims / is non-delinearizable (hash, `f(loaded)`).
+   In that case say so, name the blocking access, and stop — do NOT ship a hybrid
+   that leaves a raw `tl.load`/`tl.store` in and annotates it (violates
+   checklist item 1). But reach for `desc.gather`/`desc.scatter` before declaring
+   defeat: a per-row/per-program index into a structured tensor is portable.
+
 1. **Replace all pointer arithmetic / `block_ptr` with descriptors.** Follow
    [`../_shared/descriptor-rules.md`](../_shared/descriptor-rules.md) §1 — one
    descriptor per tensor, any rank, strides from the signature or computed for
@@ -93,6 +111,10 @@ the `## Tensor-descriptor conversion` section in place and leave any
 
 ## Checklist
 
+0. [ ] Every access mapped to a descriptor op — affine → `desc.load/store`,
+       data-dependent index → `desc.gather/scatter` (§5). Kernel declared
+       non-portable + STOPPED only on a genuine §4/§5 wall (un-widenable scalar,
+       multiplicative/fused/non-delinearizable index); never a raw-op hybrid.
 1. [ ] All memory accesses use descriptors — no raw `tl.load`/`tl.store`, no
        `tl.make_block_ptr`, no `tl.advance`, no `order`/`boundary_check`
 2. [ ] Redundant tail masks dropped (non-identity fills handled explicitly)
