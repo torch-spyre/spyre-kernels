@@ -4,7 +4,7 @@ Numerical tests for the tensor-descriptor silu_and_mul (SwiGLU) kernel.
 
 Compares _silu_and_mul_kernel_td output against the original kernel across
 various shapes and dtypes. Both kernels are launched through
-kernels/silu_and_mul/wrapper.py (via its kernel_fn= dispatch) — no forked
+kernels/vllm/silu_and_mul/wrapper.py (via its kernel_fn= dispatch) — no forked
 launch path.
 
 Unlike a reduction kernel, this kernel is purely elementwise: every output
@@ -22,8 +22,8 @@ Requires: GPU with triton support (tensor descriptor support)
 import pytest
 import torch
 
-from kernels.silu_and_mul.tensor_descriptor import _silu_and_mul_kernel_td
-from kernels.silu_and_mul.wrapper import silu_and_mul
+from kernels.vllm.silu_and_mul.tensor_descriptor import _silu_and_mul_kernel_td
+from kernels.vllm.silu_and_mul.wrapper import silu_and_mul
 
 
 # ─── Launch helpers (both go through the wrapper) ──────────────────

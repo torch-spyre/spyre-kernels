@@ -12,9 +12,9 @@ Requires: GPU with triton support
 import pytest
 import torch
 
-from kernels.matmul.wrapper import matmul
-from kernels.matmul.original import matmul_kernel
-from kernels.matmul.block_ptr import matmul_kernel_block_ptr
+from kernels.vllm.matmul.wrapper import matmul
+from kernels.vllm.matmul.original import matmul_kernel
+from kernels.vllm.matmul.block_ptr import matmul_kernel_block_ptr
 
 
 # ─── Test Parameters ───────────────────────────────────────────────

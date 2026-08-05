@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.silu_and_mul.wrapper import silu_and_mul
+from kernels.vllm.silu_and_mul.wrapper import silu_and_mul
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "silu_and_mul" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "silu_and_mul" / "kernel.ktir")
 
 NUM_ROWS = 32
 D = 1024

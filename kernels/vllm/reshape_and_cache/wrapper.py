@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.reshape_and_cache.original import reshape_and_cache_kernel_flash
+from kernels.vllm.reshape_and_cache.original import reshape_and_cache_kernel_flash
 
 
 def reshape_and_cache(

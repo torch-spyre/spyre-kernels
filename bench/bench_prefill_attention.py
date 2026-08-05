@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.prefill_attention.block_ptr import _fwd_kernel_block_ptr
-from kernels.prefill_attention.wrapper import context_attention_fwd
+from kernels.vllm.prefill_attention.block_ptr import _fwd_kernel_block_ptr
+from kernels.vllm.prefill_attention.wrapper import context_attention_fwd
 
 
 def bench_prefill_attention():

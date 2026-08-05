@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.silu_and_mul.original import _swiglustep_and_mul_kernel
+from kernels.vllm.silu_and_mul.original import _swiglustep_and_mul_kernel
 
 
 def silu_and_mul(

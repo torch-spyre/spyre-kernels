@@ -17,7 +17,7 @@ To add another Spyre variant (e.g. a future ``spyre_aware.py``), import its
 kernel and add an entry keyed by its module name.
 """
 
-from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
+from kernels.vllm.rms_norm.tensor_descriptor import _rms_norm_kernel_td
 
 # Concrete shapes match tests/ktir/test_rms_norm.py: 32 rows x 4096 cols.
 _TD_SIGNATURE = {

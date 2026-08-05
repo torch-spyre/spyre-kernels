@@ -5,16 +5,16 @@ Phase 2 Validation: GPU equivalence tests for decode_softmax_reducev kernel.
 Tests that the block-pointer stage 2 kernel produces numerically identical
 results to the original raw-pointer kernel.
 
-Run: pytest kernels/decode_softmax_reducev/test_equivalence.py -v
+Run: pytest kernels/vllm/decode_softmax_reducev/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
-from kernels.decode_softmax_reducev.original import _fwd_kernel_stage2
-from kernels.decode_softmax_reducev.block_ptr import _fwd_kernel_stage2_block_ptr
+from kernels.vllm.decode_softmax_reducev.wrapper import decode_softmax_reducev
+from kernels.vllm.decode_softmax_reducev.original import _fwd_kernel_stage2
+from kernels.vllm.decode_softmax_reducev.block_ptr import _fwd_kernel_stage2_block_ptr
 
 
 def decode_softmax_reducev_reference(

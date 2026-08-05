@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.matmul.original import matmul_kernel
+from kernels.vllm.matmul.original import matmul_kernel
 
 
 def matmul(

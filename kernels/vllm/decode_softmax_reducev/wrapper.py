@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.decode_softmax_reducev.original import _fwd_kernel_stage2
+from kernels.vllm.decode_softmax_reducev.original import _fwd_kernel_stage2
 
 
 def decode_softmax_reducev(

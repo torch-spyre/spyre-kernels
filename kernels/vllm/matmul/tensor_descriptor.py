@@ -8,7 +8,7 @@
 import triton
 import triton.language as tl
 
-from kernels.matmul.original import get_autotune_config
+from kernels.vllm.matmul.original import get_autotune_config
 
 
 @triton.jit

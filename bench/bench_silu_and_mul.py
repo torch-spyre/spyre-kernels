@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.silu_and_mul.block_ptr import _swiglustep_and_mul_kernel_block_ptr
-from kernels.silu_and_mul.wrapper import silu_and_mul
+from kernels.vllm.silu_and_mul.block_ptr import _swiglustep_and_mul_kernel_block_ptr
+from kernels.vllm.silu_and_mul.wrapper import silu_and_mul
 
 
 def bench_silu_and_mul():

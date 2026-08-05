@@ -11,6 +11,6 @@ import torch
 if not hasattr(builtins, "float8_info"):
     builtins.float8_info = torch.finfo(torch.float8_e4m3fn)
 
-import kernels.merge_attn_states.original as _orig
+import kernels.vllm.merge_attn_states.original as _orig
 
 _orig.float8_info = builtins.float8_info

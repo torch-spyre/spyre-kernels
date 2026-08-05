@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.embedding.original import embedding_forward_kernel
+from kernels.vllm.embedding.original import embedding_forward_kernel
 
 
 def embedding(

@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.prefill_attention.wrapper import context_attention_fwd
+from kernels.vllm.prefill_attention.wrapper import context_attention_fwd
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "prefill_attention" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "prefill_attention" / "kernel.ktir")
 
 SEQ_LEN = 16
 NUM_HEADS = 4

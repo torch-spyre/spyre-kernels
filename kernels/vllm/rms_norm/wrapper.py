@@ -2,8 +2,8 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.rms_norm.original import _rms_norm_kernel
-from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
+from kernels.vllm.rms_norm.original import _rms_norm_kernel
+from kernels.vllm.rms_norm.tensor_descriptor import _rms_norm_kernel_td
 
 # Default number of rows each tensor-descriptor program processes. 1 recovers
 # one program per row. Must be a power of 2: it is the row dimension of the

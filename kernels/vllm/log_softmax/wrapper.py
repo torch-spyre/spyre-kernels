@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.log_softmax.original import _topk_log_softmax_kernel
+from kernels.vllm.log_softmax.original import _topk_log_softmax_kernel
 
 
 def topk_log_softmax(

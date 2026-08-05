@@ -3,7 +3,7 @@
 Numerical tests for the tensor-descriptor matmul kernel.
 
 Compares _matmul_kernel_td output against the original kernel across various
-shapes. Both kernels are launched through kernels/matmul/wrapper.py (via its
+shapes. Both kernels are launched through kernels/vllm/matmul/wrapper.py (via its
 kernel_fn= dispatch) — no forked launch path.
 
 Tolerances: both kernels autotune independently. If they pick different
@@ -17,8 +17,8 @@ Requires: GPU with triton support (tensor descriptor support)
 import pytest
 import torch
 
-from kernels.matmul.tensor_descriptor import _matmul_kernel_td
-from kernels.matmul.wrapper import matmul
+from kernels.vllm.matmul.tensor_descriptor import _matmul_kernel_td
+from kernels.vllm.matmul.wrapper import matmul
 
 # Kernel-vs-kernel tolerance (see module docstring). Both cast to f16 at the
 # end, so the only gap is f32 accumulation order rounding into f16 — a couple

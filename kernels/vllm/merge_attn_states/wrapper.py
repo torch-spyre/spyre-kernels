@@ -5,7 +5,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.merge_attn_states.original import merge_attn_states_kernel
+from kernels.vllm.merge_attn_states.original import merge_attn_states_kernel
 
 
 def merge_attn_states(

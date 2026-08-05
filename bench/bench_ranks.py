@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.ranks.block_ptr import _ranks_kernel_block_ptr
-from kernels.ranks.wrapper import ranks
+from kernels.vllm.ranks.block_ptr import _ranks_kernel_block_ptr
+from kernels.vllm.ranks.wrapper import ranks
 
 
 def bench_ranks():

@@ -4,7 +4,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.prefill_attention.original import _fwd_kernel
+from kernels.vllm.prefill_attention.original import _fwd_kernel
 
 RCP_LN2 = 1.0 / math.log(2.0)
 

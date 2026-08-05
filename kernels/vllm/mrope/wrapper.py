@@ -2,7 +2,7 @@ import torch
 import triton
 
 from kernels._tma import ensure_triton_allocator
-from kernels.mrope.original import _triton_mrope_forward
+from kernels.vllm.mrope.original import _triton_mrope_forward
 
 
 def triton_mrope(

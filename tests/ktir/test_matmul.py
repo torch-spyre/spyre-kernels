@@ -9,10 +9,10 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.matmul.wrapper import matmul
+from kernels.vllm.matmul.wrapper import matmul
 
 MLIR_PATH = str(
-    Path(__file__).resolve().parent.parent.parent / "kernels" / "matmul" / "kernel.ktir"
+    Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "matmul" / "kernel.ktir"
 )
 
 M = 128

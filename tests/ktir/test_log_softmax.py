@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.log_softmax.wrapper import topk_log_softmax
+from kernels.vllm.log_softmax.wrapper import topk_log_softmax
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "log_softmax" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "log_softmax" / "kernel.ktir")
 
 NUM_ROWS = 32
 VOCAB_SIZE = 4096

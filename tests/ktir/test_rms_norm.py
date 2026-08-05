@@ -35,7 +35,7 @@ from ktir_cpu import KTIRInterpreter
 
 MLIR_PATH = (
     Path(__file__).resolve().parent.parent.parent
-    / "kernels" / "rms_norm" / "tensor_descriptor.ktir"
+    / "kernels" / "vllm" / "rms_norm" / "tensor_descriptor.ktir"
 )
 
 # Concrete shapes baked into the generated KTIR (32-core grid, one row each).

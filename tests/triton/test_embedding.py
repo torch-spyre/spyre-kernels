@@ -12,9 +12,9 @@ Requires: GPU with triton support
 import pytest
 import torch
 
-from kernels.embedding.wrapper import embedding
-from kernels.embedding.original import embedding_forward_kernel
-from kernels.embedding.block_ptr import embedding_forward_kernel_block_ptr
+from kernels.vllm.embedding.wrapper import embedding
+from kernels.vllm.embedding.original import embedding_forward_kernel
+from kernels.vllm.embedding.block_ptr import embedding_forward_kernel_block_ptr
 
 
 # ─── Test Parameters ───────────────────────────────────────────────

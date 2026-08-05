@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.log_softmax.block_ptr import _topk_log_softmax_kernel_block_ptr
-from kernels.log_softmax.wrapper import topk_log_softmax
+from kernels.vllm.log_softmax.block_ptr import _topk_log_softmax_kernel_block_ptr
+from kernels.vllm.log_softmax.wrapper import topk_log_softmax
 
 
 def bench_log_softmax():

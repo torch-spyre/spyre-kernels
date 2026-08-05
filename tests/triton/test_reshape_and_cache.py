@@ -2,16 +2,16 @@
 """
 Phase 2 Validation: GPU equivalence tests for reshape_and_cache kernel.
 
-Run: pytest kernels/reshape_and_cache/test_equivalence.py -v
+Run: pytest kernels/vllm/reshape_and_cache/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.reshape_and_cache.wrapper import reshape_and_cache
-from kernels.reshape_and_cache.original import reshape_and_cache_kernel_flash
-from kernels.reshape_and_cache.block_ptr import _reshape_and_cache_kernel_block_ptr
+from kernels.vllm.reshape_and_cache.wrapper import reshape_and_cache
+from kernels.vllm.reshape_and_cache.original import reshape_and_cache_kernel_flash
+from kernels.vllm.reshape_and_cache.block_ptr import _reshape_and_cache_kernel_block_ptr
 
 
 def reshape_and_cache_reference(

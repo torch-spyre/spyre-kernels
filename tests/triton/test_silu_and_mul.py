@@ -5,16 +5,16 @@ Phase 2 Validation: GPU equivalence tests for SwiGLU (silu_and_mul) kernel.
 Tests that the block-pointer kernel produces numerically identical results
 to the original raw-pointer kernel across various shapes and dtypes.
 
-Run: pytest kernels/silu_and_mul/test_equivalence.py -v
+Run: pytest kernels/vllm/silu_and_mul/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.silu_and_mul.wrapper import silu_and_mul
-from kernels.silu_and_mul.original import _swiglustep_and_mul_kernel
-from kernels.silu_and_mul.block_ptr import _swiglustep_and_mul_kernel_block_ptr
+from kernels.vllm.silu_and_mul.wrapper import silu_and_mul
+from kernels.vllm.silu_and_mul.original import _swiglustep_and_mul_kernel
+from kernels.vllm.silu_and_mul.block_ptr import _swiglustep_and_mul_kernel_block_ptr
 
 
 def silu_and_mul_reference(x: torch.Tensor, limit: float = 7.0) -> torch.Tensor:
