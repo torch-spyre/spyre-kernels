@@ -1,5 +1,5 @@
-// Generated from kernels/rms_norm/tensor_descriptor.py by scripts/gen_ktir.py
-// Source: kernels/rms_norm/lower.py -> VARIANTS['tensor_descriptor'].
+// Generated from kernels/vllm/rms_norm/tensor_descriptor.py by scripts/gen_ktir.py
+// Source: kernels/vllm/rms_norm/lower.py -> VARIANTS['tensor_descriptor'].
 // DO NOT EDIT BY HAND — regenerate with:
 //     .venv/bin/python scripts/gen_ktir.py rms_norm:tensor_descriptor
 
