@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.rms_norm.block_ptr import _rms_norm_kernel_block_ptr
-from kernels.rms_norm.wrapper import rms_norm
+from kernels.vllm.rms_norm.block_ptr import _rms_norm_kernel_block_ptr
+from kernels.vllm.rms_norm.wrapper import rms_norm
 
 
 def bench_rms_norm():

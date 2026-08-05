@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.ranks.wrapper import ranks
+from kernels.vllm.ranks.wrapper import ranks
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "ranks" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "ranks" / "kernel.ktir")
 
 NUM_ROWS = 32
 VOCAB_SIZE = 4096

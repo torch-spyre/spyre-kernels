@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.decode_softmax_reducev.block_ptr import _fwd_kernel_stage2_block_ptr
-from kernels.decode_softmax_reducev.wrapper import decode_softmax_reducev
+from kernels.vllm.decode_softmax_reducev.block_ptr import _fwd_kernel_stage2_block_ptr
+from kernels.vllm.decode_softmax_reducev.wrapper import decode_softmax_reducev
 
 
 def _make_mid_o(batch, heads, num_kv_splits, Lv, seq_lens, device):

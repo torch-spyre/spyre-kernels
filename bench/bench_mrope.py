@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.mrope.block_ptr import _triton_mrope_forward_block_ptr
-from kernels.mrope.wrapper import triton_mrope
+from kernels.vllm.mrope.block_ptr import _triton_mrope_forward_block_ptr
+from kernels.vllm.mrope.wrapper import triton_mrope
 
 
 def bench_mrope():

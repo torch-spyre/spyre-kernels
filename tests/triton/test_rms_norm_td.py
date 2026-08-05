@@ -3,7 +3,7 @@
 Numerical tests for the tensor-descriptor RMS norm kernel.
 
 Compares _rms_norm_kernel_td output against the original kernel across various
-shapes and dtypes. Both kernels are launched through kernels/rms_norm/wrapper.py
+shapes and dtypes. Both kernels are launched through kernels/vllm/rms_norm/wrapper.py
 (via its kernel_fn= dispatch) — no forked launch path. The wrapper exposes
 rows_per_program / block_size so these tests can sweep the descriptor tiling
 through the same code the production path uses.
@@ -19,8 +19,8 @@ Requires: GPU with triton support (tensor descriptor support)
 import pytest
 import torch
 
-from kernels.rms_norm.tensor_descriptor import _rms_norm_kernel_td
-from kernels.rms_norm.wrapper import rms_norm
+from kernels.vllm.rms_norm.tensor_descriptor import _rms_norm_kernel_td
+from kernels.vllm.rms_norm.wrapper import rms_norm
 
 
 # ─── Launch helpers (both go through the wrapper) ──────────────────

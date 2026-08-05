@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 KERNELS_JSON = ROOT / "kernels.json"
-KERNELS_DIR = ROOT / "kernels"
+KERNELS_DIR = ROOT / "kernels" / "vllm"
 
 
 def load_registry():

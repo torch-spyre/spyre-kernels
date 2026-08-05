@@ -5,16 +5,16 @@ Phase 2 Validation: GPU equivalence tests for ranks kernel.
 Tests that the block-pointer kernel produces identical results
 to the original raw-pointer kernel across various shapes and dtypes.
 
-Run: pytest kernels/ranks/test_equivalence.py -v
+Run: pytest kernels/vllm/ranks/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.ranks.wrapper import ranks
-from kernels.ranks.original import _ranks_kernel
-from kernels.ranks.block_ptr import _ranks_kernel_block_ptr
+from kernels.vllm.ranks.wrapper import ranks
+from kernels.vllm.ranks.original import _ranks_kernel
+from kernels.vllm.ranks.block_ptr import _ranks_kernel_block_ptr
 
 
 def ranks_reference(logits: torch.Tensor, token_ids: torch.Tensor) -> torch.Tensor:

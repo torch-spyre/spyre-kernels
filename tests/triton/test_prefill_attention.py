@@ -2,16 +2,16 @@
 """
 Phase 2 Validation: GPU equivalence tests for prefill attention kernel.
 
-Run: pytest kernels/prefill_attention/test_equivalence.py -v
+Run: pytest kernels/vllm/prefill_attention/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.prefill_attention.wrapper import context_attention_fwd
-from kernels.prefill_attention.original import _fwd_kernel
-from kernels.prefill_attention.block_ptr import _fwd_kernel_block_ptr
+from kernels.vllm.prefill_attention.wrapper import context_attention_fwd
+from kernels.vllm.prefill_attention.original import _fwd_kernel
+from kernels.vllm.prefill_attention.block_ptr import _fwd_kernel_block_ptr
 
 
 def attention_reference(

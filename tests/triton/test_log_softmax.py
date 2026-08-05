@@ -5,16 +5,16 @@ Phase 2 Validation: GPU equivalence tests for top-k log-softmax kernel.
 Tests that the block-pointer kernel produces numerically identical results
 to the original raw-pointer kernel across various shapes and dtypes.
 
-Run: pytest kernels/log_softmax/test_equivalence.py -v
+Run: pytest kernels/vllm/log_softmax/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.log_softmax.wrapper import topk_log_softmax
-from kernels.log_softmax.original import _topk_log_softmax_kernel
-from kernels.log_softmax.block_ptr import _topk_log_softmax_kernel_block_ptr
+from kernels.vllm.log_softmax.wrapper import topk_log_softmax
+from kernels.vllm.log_softmax.original import _topk_log_softmax_kernel
+from kernels.vllm.log_softmax.block_ptr import _topk_log_softmax_kernel_block_ptr
 
 
 def topk_log_softmax_reference(

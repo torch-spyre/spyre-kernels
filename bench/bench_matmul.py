@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.matmul.block_ptr import matmul_kernel_block_ptr
-from kernels.matmul.wrapper import matmul
+from kernels.vllm.matmul.block_ptr import matmul_kernel_block_ptr
+from kernels.vllm.matmul.wrapper import matmul
 
 
 def bench_matmul():

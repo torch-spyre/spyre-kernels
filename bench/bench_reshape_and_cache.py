@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.reshape_and_cache.block_ptr import _reshape_and_cache_kernel_block_ptr
-from kernels.reshape_and_cache.wrapper import reshape_and_cache
+from kernels.vllm.reshape_and_cache.block_ptr import _reshape_and_cache_kernel_block_ptr
+from kernels.vllm.reshape_and_cache.wrapper import reshape_and_cache
 
 
 def bench_reshape_and_cache():

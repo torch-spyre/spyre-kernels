@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.merge_attn_states.wrapper import merge_attn_states
+from kernels.vllm.merge_attn_states.wrapper import merge_attn_states
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "merge_attn_states" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "merge_attn_states" / "kernel.ktir")
 
 NUM_TOKENS = 32
 NUM_HEADS = 8

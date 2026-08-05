@@ -2,16 +2,16 @@
 """
 Phase 2 Validation: GPU equivalence tests for MRoPE kernel.
 
-Run: pytest kernels/mrope/test_equivalence.py -v
+Run: pytest kernels/vllm/mrope/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-from kernels.mrope.wrapper import triton_mrope
-from kernels.mrope.original import _triton_mrope_forward
-from kernels.mrope.block_ptr import _triton_mrope_forward_block_ptr
+from kernels.vllm.mrope.wrapper import triton_mrope
+from kernels.vllm.mrope.original import _triton_mrope_forward
+from kernels.vllm.mrope.block_ptr import _triton_mrope_forward_block_ptr
 
 
 def mrope_reference(

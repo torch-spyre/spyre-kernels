@@ -2,18 +2,18 @@
 """
 Phase 2 Validation: GPU equivalence tests for merge_attn_states kernel.
 
-Run: pytest kernels/merge_attn_states/test_equivalence.py -v
+Run: pytest kernels/vllm/merge_attn_states/test_equivalence.py -v
 Requires: GPU with triton support
 """
 
 import pytest
 import torch
 
-import kernels.merge_attn_states  # noqa: F401
+import kernels.vllm.merge_attn_states  # noqa: F401
 
-from kernels.merge_attn_states.wrapper import merge_attn_states
-from kernels.merge_attn_states.original import merge_attn_states_kernel
-from kernels.merge_attn_states.block_ptr import _merge_attn_states_kernel_block_ptr
+from kernels.vllm.merge_attn_states.wrapper import merge_attn_states
+from kernels.vllm.merge_attn_states.original import merge_attn_states_kernel
+from kernels.vllm.merge_attn_states.block_ptr import _merge_attn_states_kernel_block_ptr
 
 
 def merge_attn_states_reference(

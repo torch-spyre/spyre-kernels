@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.merge_attn_states.block_ptr import _merge_attn_states_kernel_block_ptr
-from kernels.merge_attn_states.wrapper import merge_attn_states
+from kernels.vllm.merge_attn_states.block_ptr import _merge_attn_states_kernel_block_ptr
+from kernels.vllm.merge_attn_states.wrapper import merge_attn_states
 
 
 def bench_merge_attn_states():

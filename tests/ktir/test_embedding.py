@@ -6,9 +6,9 @@ import numpy as np
 import torch
 
 from ktir_cpu import KTIRInterpreter
-from kernels.embedding.wrapper import embedding
+from kernels.vllm.embedding.wrapper import embedding
 
-MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "embedding" / "kernel.ktir")
+MLIR_PATH = str(Path(__file__).resolve().parent.parent.parent / "kernels" / "vllm" / "embedding" / "kernel.ktir")
 
 N_TOKENS = 32
 VOCAB_SIZE = 4096

@@ -4,8 +4,8 @@
 import torch
 
 from bench.utils import BENCH_HEADER, BENCH_SEP, format_result, gpu_warmup, stable_bench
-from kernels.embedding.block_ptr import embedding_forward_kernel_block_ptr
-from kernels.embedding.wrapper import embedding
+from kernels.vllm.embedding.block_ptr import embedding_forward_kernel_block_ptr
+from kernels.vllm.embedding.wrapper import embedding
 
 
 def bench_embedding():
