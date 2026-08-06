@@ -22,14 +22,25 @@ Every kernel should be validated across four tiers:
 ```
 spyre-kernels/
 ├── kernels/                       # Kernel implementations
-│   ├── <name>/
-│   │   ├── original.py            # Original kernel (e.g., from vLLM)
-│   │   ├── block_ptr.py           # Block-pointer version (deprecated)
-│   │   ├── tensor_descriptor.py   # Tensor-descriptor version
-│   │   ├── spyre_aware.py         # Spyre-aware version
-│   │   ├── lower.py               # KTIR lowering driver
-│   │   ├── wrapper.py             # Python launcher
-│   │   └── <variant>.ktir         # Generated KTIR, one per lowered variant (e.g. tensor_descriptor.ktir)
+│   ├── vllm/                       # Hand-authored kernels (source: vLLM)
+│   │   └── <name>/
+│   │       ├── original.py            # Original kernel (e.g., from vLLM)
+│   │       ├── block_ptr.py           # Block-pointer version (deprecated)
+│   │       ├── tensor_descriptor.py   # Tensor-descriptor version
+│   │       ├── spyre_aware.py         # Spyre-aware version
+│   │       ├── lower.py               # KTIR lowering driver
+│   │       ├── wrapper.py             # Python launcher
+│   │       └── <variant>.ktir         # Generated KTIR, one per lowered variant (e.g. tensor_descriptor.ktir)
+│   │
+│   └── models/                     # Kernels traced out of real models
+│       └── Meta-Llama-3.1-8B-Instruct/
+│           └── <op_name>_spyre/
+│               ├── wrapper.py              # SIGNATURE + make_inputs()/run() oracle + launcher
+│               ├── triton_kernel.py         # Traced Triton kernel source
+│               ├── test_ktir_<op_name>.py   # KTIR/CPU validation test (T2), see Quick Start
+│               └── <stage>.ktir             # Generated KTIR — one file for a single-stage
+│                                            #   kernel, or one per stage for bundled/
+│                                            #   multi-stage kernels (e.g. linear, silu)
 │
 ├── tests/
 │   ├── triton/                    # GPU equivalence tests (T0)
@@ -67,6 +78,11 @@ Then run the tests:
 
 # All tests
 .venv/bin/python -m pytest tests/ -v
+
+# KTIR validation tests (T2) for kernels traced out of real models
+# (not part of `tests/` — run explicitly, for all ops or a single op)
+.venv/bin/python -m pytest kernels/models/ -v
+.venv/bin/python -m pytest kernels/models/Meta-Llama-3.1-8B-Instruct/torch.add.1_spyre/ -v
 ```
 
 ## Authoring kernels (regenerate KTIR)
