@@ -14,7 +14,6 @@ import types
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from ktir_cpu import KTIRInterpreter
 
@@ -63,48 +62,6 @@ def classify(op_dir: Path) -> str:
     if n_ktir == 5:
         return "per_stage"
     raise ValueError(f"{op_dir}: unrecognized KTIR layout ({n_ktir} .ktir files)")
-
-
-# ---------------------------------------------------------------------------
-# Known pre-existing, unrelated bugs/limits -- documented xfail reasons,
-# following the DISABLED_REASON convention in
-# torch.nn.functional.linear.1_spyre/wrapper.py.
-# ---------------------------------------------------------------------------
-
-_MUL_LAYOUT_DRIFT_REASON = (
-    "Pre-existing KTIR-generation bug: the generated ktir_kernel.ktir's output "
-    "ktdp.construct_memory_view declares the same head-outermost sizes/strides as "
-    "the input descriptor, but the kernel's own triton_kernel.py declares a "
-    "genuinely different (tile-outermost) output descriptor via "
-    "tl.make_tensor_descriptor(...). This is a store-descriptor lowering/round-trip "
-    "bug, not a test-harness issue -- confirmed by comparing wrapper.py's run() "
-    "reshape/transpose order against both descriptors directly."
-)
-
-_SCRATCHPAD_OVERFLOW_REASON = (
-    "Pre-existing ktir_cpu interpreter limit: this kernel's per-program tile is "
-    "524288 elements (1 MiB in f16), which exceeds ktir_cpu's simulated LX "
-    "scratchpad capacity (MemoryError: LX scratchpad overflow). A genuine "
-    "interpreter resource limit, not a numerical bug."
-)
-
-_LINEAR_LAYOUT_DRIFT_REASON = (
-    "Pre-existing KTIR-generation bug: stage 0 (repack) completes, but stage 1's "
-    "(tl.dot) result is numerically unrelated to the NumPy oracle (>99% of "
-    "elements mismatched). Confirmed this is not a shape/reinterpretation issue "
-    "in the test harness (reshaping the scratch buffer to stage 1's declared "
-    "construct_memory_view sizes changes the result bit-for-bit not at all) -- "
-    "it's the same class of store/load descriptor-layout drift bug as the "
-    "torch.mul.* cases, just between the two bundled stages instead of within one "
-    "kernel."
-)
-
-XFAIL_REASONS = {
-    **{f"torch.mul.{i}_spyre": _MUL_LAYOUT_DRIFT_REASON for i in (2, 4, 5, 6, 7, 12, 13, 14, 15)},
-    "torch.zeros.1_spyre": _SCRATCHPAD_OVERFLOW_REASON,
-    **{f"torch.nn.functional.linear.{i}_spyre": _SCRATCHPAD_OVERFLOW_REASON for i in (1, 6, 8)},
-    **{f"torch.nn.functional.linear.{i}_spyre": _LINEAR_LAYOUT_DRIFT_REASON for i in (2, 7)},
-}
 
 
 # ---------------------------------------------------------------------------
