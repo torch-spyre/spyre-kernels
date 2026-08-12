@@ -1,50 +1,27 @@
-#loc = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":17:1)
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #set = affine_set<(d0, d1) : (d0 >= 0, -d0 + 63 >= 0, d1 >= 0, -d1 + 63 >= 0)>
 #set1 = affine_set<(d0, d1) : (d0 >= 0, -d0 + 1 >= 0, d1 >= 0, -d1 + 63 >= 0)>
 module {
-  func.func @triton_unk_fused_mul_0(%arg0: index loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":17:1), %arg1: index loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":17:1), %arg2: index loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":17:1), %arg3: i32 loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":17:1)) attributes {grid = [32]} {
-    %c64_i32 = arith.constant 64 : i32 loc(#loc1)
-    %c128_i32 = arith.constant 128 : i32 loc(#loc1)
-    %c0 = ktdp.get_compute_tile_id : index loc(#loc13)
-    %c0_0 = arith.index_cast %c0 : index to i32 loc(#loc13)
-    %c0_1 = arith.muli %c0_0, %c128_i32 : i32 loc(#loc14)
-    %dim0 = arith.divsi %c0_1, %c64_i32 : i32 loc(#loc15)
-    %dim1 = arith.remsi %c0_1, %c64_i32 : i32 loc(#loc16)
-    %desc_0 = ktdp.construct_memory_view %arg0, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16> loc(#loc17)
-    %desc_1 = ktdp.construct_memory_view %arg1, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16> loc(#loc18)
-    %desc_2 = ktdp.construct_memory_view %arg2, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16> loc(#loc19)
-    %tmp0 = arith.index_cast %dim0 : i32 to index loc(#loc20)
-    %tmp0_2 = arith.index_cast %dim1 : i32 to index loc(#loc20)
-    %tmp0_3 = ktdp.construct_access_tile %desc_0[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex> loc(#loc20)
-    %tmp0_4 = ktdp.load %tmp0_3 : <2x64xindex> -> tensor<2x64xf16> loc(#loc20)
-    %tmp1 = ktdp.construct_access_tile %desc_1[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex> loc(#loc21)
-    %tmp1_5 = ktdp.load %tmp1 : <2x64xindex> -> tensor<2x64xf16> loc(#loc21)
-    %tmp2 = arith.mulf %tmp0_4, %tmp1_5 : tensor<2x64xf16> loc(#loc22)
-    %0 = ktdp.construct_access_tile %desc_2[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex> loc(#loc12)
-    ktdp.store %tmp2, %0 : tensor<2x64xf16>, <2x64xindex> loc(#loc12)
-    return loc(#loc)
-  } loc(#loc)
-} loc(#loc)
-#loc1 = loc(unknown)
-#loc2 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":19:11)
-#loc3 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":19:10)
-#loc4 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":21:12)
-#loc5 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":22:12)
-#loc6 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":23:14)
-#loc7 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":24:14)
-#loc8 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":25:14)
-#loc9 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":26:12)
-#loc10 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":27:12)
-#loc11 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":28:12)
-#loc12 = loc("/home/erio/dt-inductor/torch-spyre/test_results_triton_20260731_095001/torch.mul.11_spyre/torchinductor_cache/tmplfwu0wpd/c7/cc74gphyyarmzcug2u3bbuov6tm3nwcs7ghvwkj4kevy2d56ehuy.py":29:5)
-#loc13 = loc("c0"(#loc2))
-#loc14 = loc("c0"(#loc3))
-#loc15 = loc("dim0"(#loc4))
-#loc16 = loc("dim1"(#loc5))
-#loc17 = loc("desc_0"(#loc6))
-#loc18 = loc("desc_1"(#loc7))
-#loc19 = loc("desc_2"(#loc8))
-#loc20 = loc("tmp0"(#loc9))
-#loc21 = loc("tmp1"(#loc10))
-#loc22 = loc("tmp2"(#loc11))
+  func.func @triton_unk_fused_mul_0(%arg0: index, %arg1: index, %arg2: index, %arg3: i32) attributes {grid = [32]} {
+    %c64_i32 = arith.constant 64 : i32
+    %c128_i32 = arith.constant 128 : i32
+    %c0 = ktdp.get_compute_tile_id : index
+    %c0_0 = arith.index_cast %c0 : index to i32
+    %c0_1 = arith.muli %c0_0, %c128_i32 : i32
+    %dim0 = arith.divsi %c0_1, %c64_i32 : i32
+    %dim1 = arith.remsi %c0_1, %c64_i32 : i32
+    %desc_0 = ktdp.construct_memory_view %arg0, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16>
+    %desc_1 = ktdp.construct_memory_view %arg1, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16>
+    %desc_2 = ktdp.construct_memory_view %arg2, sizes: [64, 64], strides: [64, 1] {coordinate_set = #set, memory_space = #ktdp.spyre_memory_space<HBM>} : memref<64x64xf16>
+    %tmp0 = arith.index_cast %dim0 : i32 to index
+    %tmp0_2 = arith.index_cast %dim1 : i32 to index
+    %tmp0_3 = ktdp.construct_access_tile %desc_0[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex>
+    %tmp0_4 = ktdp.load %tmp0_3 : <2x64xindex> -> tensor<2x64xf16>
+    %tmp1 = ktdp.construct_access_tile %desc_1[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex>
+    %tmp1_5 = ktdp.load %tmp1 : <2x64xindex> -> tensor<2x64xf16>
+    %tmp2 = arith.mulf %tmp0_4, %tmp1_5 : tensor<2x64xf16>
+    %0 = ktdp.construct_access_tile %desc_2[%tmp0, %tmp0_2] {access_tile_order = #map, access_tile_set = #set1} : memref<64x64xf16> -> !ktdp.access_tile<2x64xindex>
+    ktdp.store %tmp2, %0 : tensor<2x64xf16>, <2x64xindex>
+    return
+  }
+}
