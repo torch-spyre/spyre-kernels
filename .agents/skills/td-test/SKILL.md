@@ -89,9 +89,18 @@ accumulates in a different order than the reference), or the KB documents a
 precision difference. **f32 outputs should be near-exact** (reductions
 accumulate in f32) — keep `1e-5`.
 
-**Single-tile cases are bitwise-identical.** When a row/problem fits one tile
-(`size <= BLOCK_SIZE`), there is no reduction-order difference — assert
-`atol=0, rtol=0`. A loose tolerance there hides regressions.
+**`atol=0` is for bytes the kernel *moved*, `TOL[dtype]` is for numbers it
+*computed*.** Reduction order is not the only source of divergence: the original
+and the `_td` kernel lower their loads differently (raw pointer + mask vs
+descriptor + `where`), so the compiler may contract a multiply-add into an FMA
+on one path and not the other — ~1 ULP, elementwise, no reduction involved. So a
+single-tile / no-reduction case is *not* automatically bitwise-identical.
+
+- Output the kernel computes arithmetically (any multiply-then-add/sub) → FMA
+  hazard → use `TOL[dtype]`, even single-tile.
+- Output the kernel only copies/passes through untouched → genuinely
+  bitwise-identical → assert `atol=0, rtol=0`. A loose tolerance there hides
+  regressions.
 
 ### 2. Edge cases
 
