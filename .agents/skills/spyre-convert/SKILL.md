@@ -80,11 +80,75 @@ rely on a fixed list here.
    issues/docs) where the current gaps are tracked, so the target form is clear
    once the compiler catches up.
 
-## Layout awareness (write logical; the compiler tiles physical)
+## Layout awareness (write logical; annotate the physical layout with a marker)
 
 Write descriptors in **logical** shape — the tensor's math dimensions — see the
 worked [`../_shared/examples/matmul-logical.md`](../_shared/examples/matmul-logical.md).
-You do **not** hand-write the physical device layout; the compiler derives it.
+You do **not** hand-write the physical device layout in the shape/strides; the
+compiler tiles it.
+
+> When a tensor is stick-tiled, make the physical layout **explicit** with a
+> `tl.spyre_tensor_layout` marker on its descriptor. The descriptor stays
+> logical; the marker declares the stick factoring; the compiler's
+> `RewriteDescriptorLayout` pass synthesizes the physical loops. `tl.dot` is
+> untouched and there is **no** reshape glue (contrast the physical variant).
+
+For each stick-tiled descriptor, immediately after constructing it:
+
+```python
+a_desc = tl.make_tensor_descriptor(a_ptr, shape=[M, K], strides=[K, 1],
+                                    block_shape=[BLOCK_M, BLOCK_K])
+tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # stick-on-M
+```
+
+- **One entry per physical dim**, in the order `[stick-index, other…, lane]`.
+  Convention: `stick-on-X` → `[(X, "floordiv", S), other, (X, "mod", S)]`. Bare
+  int = identity on that logical dim; `(src,"floordiv",S)` = stick index;
+  `(src,"mod",S)` = within-stick lane.
+- **`src` is the logical dim index** being stick-tiled (K for `A[M,K]` is dim 1;
+  K for `B[K,N]` is dim 0 — same-looking markers name different axes).
+- **`S = 128 // dtype_bytes`** (64 fp16/bf16, 32 fp32, 128 fp8) — not hard-coded.
+- **Stickified extents must be multiples of `S`.** A ragged split silently
+  produces an out-of-bounds physical view (not diagnosed) — pad on the host, and
+  say so in the conversion notes. A stick dim's *block* extent may not be
+  sub-stick either.
+- **Inline only.** The list must be a literal at the call site; binding it to a
+  local makes the jit try to tensor-convert the keyword strings (compile error).
+  A `tl.constexpr` arg is fine — guard it with `if A_LAYOUT is not None:`.
+- **Mark the output descriptor** too when the store must scatter into sticks.
+- **Mark the memory operands of the tiled op only.** Both sides of a stickified
+  contraction axis must be marked, with the same stick size. Leave logical
+  intermediates (a softmax result feeding the next `tl.dot`, a scratchpad) and
+  elementwise addends (a bias / additive mask) **unmarked**.
+- **A transposed operand still gets marked.** Mark it and bring it in with
+  `tl.trans` — the pass absorbs the permutation (this is how you write `Q·Kᵀ`),
+  and chained transposes compose. A transpose *after* the contraction feeding a
+  marked store is preserved instead, so keep it if you need that output order.
+- **Markers are not matmul-only** — a marked input to a reduction gets the same
+  stick loop.
+- **Batched matmul: an identity batch dim.** A descriptor may carry a leading
+  batch axis (`[BATCH, M, K]`) — make it an identity dim (a bare `src` int) and
+  stick-tile only the inner matmul axis; `tl.dot` over the trailing two dims
+  lowers to `linalg.batch_matmul`, covering every batch/head in one launch. Only
+  one leading batch dim is dispatched; fold extras on the host.
+- **Write enclosing loops in block units.** If a loop IV feeds a marked
+  descriptor's stick dim, the pass rescales the loop's bounds *and step* into
+  stick units — do not pre-multiply by the stick count yourself.
+- **Dynamic extent.** An extent may be a runtime `i32` arg (put it in `shape`
+  only; `strides`/`block_shape` stay constexpr) so one lowered kernel serves any
+  size along that axis.
+
+Which loop structure results (a parallel scatter over an output axis's sticks vs a
+K-reduction loop) is a *consequence* of which axes you mark — the compiler assigns
+a role per physical dim and derives the loops. See
+[`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md)
+for the full coordinate-map reference, the verifier's diagnostics, and the
+`data_layout` / `required_fixes` lowering options.
+
+> **Dependency:** `tl.spyre_tensor_layout` requires the `torch-spyre/triton`
+> build (not stock PyPI Triton). KTIR generation is pinned to that build, and
+> that pin is coupled to the `ktir-cpu` rev — see
+> [`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md).
 
 ## Output file structure
 

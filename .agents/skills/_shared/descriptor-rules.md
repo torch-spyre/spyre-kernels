@@ -147,3 +147,37 @@ a per-row / per-program index into an otherwise structured tensor — **is**
 portable via `desc.gather` / `desc.scatter`. Reach for those before declaring
 defeat. (The gathered tile still owes §4: gather a ≥ 16-byte slice, not a single
 element.)
+
+## 6. Physical stick layout — annotate with `tl.spyre_tensor_layout`
+
+> **Spyre-family only.** For stick-tiled tensors, keep the descriptor **logical**
+> and declare the physical layout with a `tl.spyre_tensor_layout` marker; the
+> compiler's `RewriteDescriptorLayout` pass synthesizes the physical loops.
+> `tl.dot` is unchanged and there is no reshape glue.
+
+```python
+tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # A[M,K] stick-on-M
+```
+
+One entry per physical dim, ordered `[stick-index, other…, lane]`. A bare int is
+an identity dim; `(src,"floordiv",S)` is the stick index; `(src,"mod",S)` is the
+lane. `src` is the **logical** dim index, and the stick divisor is
+`S = 128 // dtype_bytes` (64 fp16/bf16, 32 fp32, 128 fp8) — never hard-coded.
+The list must be **inline** (or a `constexpr` arg).
+
+Three rules that bite:
+
+- **Stickified extents must be multiples of `S`.** A ragged split silently
+  produces an out-of-bounds physical view — it is not diagnosed. Pad on the host.
+- **Mark the memory operands of the tiled op only.** Both sides of a stickified
+  contraction axis must be marked; logical intermediates, elementwise addends (a
+  bias / additive mask), and gathered indirect dims stay unmarked.
+- **A marked operand may be transposed into `tl.dot`** — mark it and use
+  `tl.trans`; the pass absorbs the permutation. (A transpose *after* the
+  contraction, feeding a marked store, is preserved instead.)
+
+Markers apply to reductions too, not just `tl.dot`. Full coordinate-map
+reference, the per-dim role/dispatch model, multi-stick scatter, loop rescaling,
+batched matmul, dynamic extent, the op verifier's diagnostics, output-sink
+behavior, lowering options, and the dependency pin:
+[`spyre/tensor-layout-marker.md`](spyre/tensor-layout-marker.md).
