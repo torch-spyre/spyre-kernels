@@ -159,22 +159,31 @@ element.)
 tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # A[M,K] stick-on-M
 ```
 
-One entry per physical dim, ordered `[stick-index, other…, lane]`. A bare int is
-an identity dim; `(src,"floordiv",S)` is the stick index; `(src,"mod",S)` is the
-lane. `src` is the **logical** dim index, and the stick divisor is
-`S = 128 // dtype_bytes` (64 fp16/bf16, 32 fp32, 128 fp8) — never hard-coded.
-The list must be **inline** (or a `constexpr` arg).
+One entry per physical dim. A bare int is an identity dim;
+`(src,"floordiv",S)` is the stick index; `(src,"mod",S)` is the lane. `src` is the
+**logical** dim index, and the stick divisor is `S = 128 // dtype_bytes` (64
+fp16/bf16, 32 fp32, 128 fp8) — never hard-coded. `[stick, other, lane]` is the
+usual order but not a requirement (the pass finds the lane by scanning for the
+`mod` entry). **The layout must reach the builtin as a `tl.constexpr` kernel arg**
+— an inline literal with stick-split entries raises, as does binding it to a local.
 
 Three rules that bite:
 
 - **Stickified extents must be multiples of `S`.** A ragged split silently
   produces an out-of-bounds physical view — it is not diagnosed. Pad on the host.
-- **Mark the memory operands of the tiled op only.** Both sides of a stickified
-  contraction axis must be marked; logical intermediates, elementwise addends (a
-  bias / additive mask), and gathered indirect dims stay unmarked.
+  A stickified dim's `BLOCK_*` must also be at least `S` (sub-stick is rejected).
+- **Mark the memory operands of the tiled op only.** Both sides of a *multi-stick*
+  stickified contraction axis must be marked; logical intermediates, elementwise
+  addends (a bias / additive mask), and gathered indirect dims stay unmarked. All
+  operands of an *elementwise* op must physicalize identically — which is why a
+  softmax-shaped reduce-then-broadcast against a marked tensor is a known blocker.
 - **A marked operand may be transposed into `tl.dot`** — mark it and use
   `tl.trans`; the pass absorbs the permutation. (A transpose *after* the
   contraction, feeding a marked store, is preserved instead.)
+
+Note the pass has **no diagnostic for a consumer it cannot physicalize**, so a
+marked kernel that lowers without error may still be silently wrong — always pair
+it with structural KTIR assertions and a numerical ktir-cpu run.
 
 Markers apply to reductions too, not just `tl.dot`. Full coordinate-map
 reference, the per-dim role/dispatch model, multi-stick scatter, loop rescaling,

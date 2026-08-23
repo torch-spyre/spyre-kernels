@@ -112,9 +112,18 @@ tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # stic
   produces an out-of-bounds physical view (not diagnosed) — pad on the host, and
   say so in the conversion notes. A stick dim's *block* extent may not be
   sub-stick either.
-- **Inline only.** The list must be a literal at the call site; binding it to a
-  local makes the jit try to tensor-convert the keyword strings (compile error).
-  A `tl.constexpr` arg is fine — guard it with `if A_LAYOUT is not None:`.
+- **Pass the layout as a `tl.constexpr` kernel arg — not an inline literal.** A
+  layout containing stick-split entries *raises* when written inline at the call
+  site (`TypeError: int() argument must be ... not 'tuple'`), because the jit
+  frontend turns the literal into a `core.tuple` that the parser's builtin-`tuple`
+  isinstance check rejects. Binding it to a plain local also fails (the jit tries
+  to tensor-convert the `"floordiv"` string). The working form:
+
+  ```python
+  def kern(..., A_LAYOUT: tl.constexpr):
+      if A_LAYOUT is not None:
+          tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+  ```
 - **Mark the output descriptor** too when the store must scatter into sticks.
 - **Mark the memory operands of the tiled op only.** Both sides of a stickified
   contraction axis must be marked, with the same stick size. Leave logical

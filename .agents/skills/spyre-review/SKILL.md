@@ -64,9 +64,13 @@ scalar descriptor or stale gap annotation is a FAIL.
 For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
 [`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md)):
 
-- **Present** on each stick-tiled descriptor; **inline literal** or a `constexpr`
-  arg (a list bound to a plain local is a compile error — FAIL). A `constexpr`
-  guard should read `if X_LAYOUT is not None:`.
+- **Present** on each stick-tiled descriptor, placed right after
+  `make_tensor_descriptor` and before any `.load`/`.store`.
+- **Passed as a `tl.constexpr` arg**, guarded `if X_LAYOUT is not None:` — an
+  inline literal containing stick-split entries raises at compile time, and a
+  layout bound to a plain local raises too. A marker fed an inline
+  `[(0,"floordiv",S), …]` literal is a **FAIL** (this is the reverse of the older
+  guidance; verify against the current reference).
 - **Well-formed**: one entry per physical dim; `stick-on-X` form
   `[(X,"floordiv",S), other, (X,"mod",S)]`; `src` indices in range for the
   logical rank; a repeated logical dim appears **only** as exactly one `floordiv`

@@ -133,11 +133,19 @@ structural checks that catch a silently-wrong lowering the numeric test might mi
   drives the store sink.
 - A **dynamic extent** lowered to a `?` (kDynamic) memref dim (`memref<…x?x…>`).
 
-Note these are assertions about *this repo's* generated KTIR — the lowering
-options behind it (`data_layout`, `required_fixes`) are not yet plumbed through
-`round_trip.py`, so a marked kernel currently lowers with `data_layout="device"`
-and no fix passes. If a lowering assertion fails in a way that implicates either,
-see [`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md).
+Note these are assertions about *this repo's* generated KTIR. They matter more
+than usual because **the pass has no diagnostic for a consumer it cannot
+physicalize** (upstream PR #95, still open) — a marked kernel can lower cleanly
+and still be silently wrong, so "it generated KTIR" is never verification on its
+own. Structural checks plus a numerical run are the defense.
+
+Two lowering options behind the KTIR are also not yet plumbed through
+`round_trip.py` (it forwards only `grid`), so a marked kernel currently lowers
+with `data_layout="device"` and no fix passes. **`data_layout="host"` is what
+upstream layout fixtures use and what makes a host row-major NumPy buffer
+match** — if numbers are wrong in a way that looks like a stride/layout mismatch,
+that is the first thing to check. See
+[`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md).
 
 ### 4. Runtime-size (dynamic extent) coverage
 

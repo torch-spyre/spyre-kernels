@@ -49,24 +49,39 @@ tt.spyre_tensor_layout %desc {phys_src = array<i64: 1, 0, 1>,
 
 ## Layout convention
 
-`stick-on-X` factors dimension `X` into `(X // S, X % S)` and the physical dim
-order is **`[X//S, other, X%S]`** — stick index first, lane last:
+`stick-on-X` factors dimension `X` into `(X // S, X % S)`. The **conventional**
+physical dim order is `[X//S, other, X%S]` — stick index first, lane last:
 
 ```python
 # stick-on-X  ->  [(X, "floordiv", S), other_logical, (X, "mod", S)]
-tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # A[M,K] stick-on-M
-tl.spyre_tensor_layout(b_desc, [(1, "floordiv", 64), 0, (1, "mod", 64)])  # B[K,N] stick-on-N
-tl.spyre_tensor_layout(c_desc, [(1, "floordiv", 64), 0, (1, "mod", 64)])  # C[M,N] stick-on-N
+[(0, "floordiv", 64), 1, (0, "mod", 64)]   # A[M,K] stick-on-M
+[(1, "floordiv", 64), 0, (1, "mod", 64)]   # B[K,N] stick-on-N
+[(1, "floordiv", 64), 0, (1, "mod", 64)]   # C[M,N] stick-on-N
 ```
 
-## Stickified extents must be stick-multiples
+**That order is a convention, not a requirement.** `classify()` locates the lane
+by *scanning for the `Mod` entry*, not by position, so identity dims may lead and
+the lane need not be last. The real Spyre activation/weight layout relies on this
+— `bmm_spyre_stick_activation` puts an identity dim first:
+
+```python
+# A[B,M,K] stick-on-K: phys [M, K/S, B, K%S]  — M leading, batch sandwiched
+"A_LAYOUT": [1, (2, "floordiv", S), 0, (2, "mod", S)]
+# B[B,K,N] stick-on-N: phys [N/S, B, K, N%S]
+"B_LAYOUT": [(2, "floordiv", S), 0, 1, (2, "mod", S)]
+```
+
+Use the conventional order unless you are matching a specific hardware layout.
+
+## Stickified extents must be stick-multiples; blocks must be ≥ one stick
 
 Every extent you stick-tile must stay a multiple of `S`. A ragged
 (non-divisible) split **silently produces an out-of-bounds physical view** — it
 is not diagnosed. Pad on the host instead. (Upstream fixture comment: sweeping
 onto a non-multiple "would encode broken behavior rather than test it".)
 
-Separately, the *block* extent of a stick dim may not be sub-stick:
+Separately, the `block_shape` extent on a stick dim must be **at least `S`** — so
+a stickified dim's `BLOCK_*` may not be sub-stick:
 
 ```
 spyre_tensor_layout: block extent of stick dim (32) is smaller than the
@@ -157,11 +172,16 @@ lower bounds and non-unit steps are handled.
 The pass physicalizes a marked descriptor into stick tiles and orients it into
 canonical form for the consuming op. Rules:
 
-- **Both operands of a stickified contraction axis must be marked**, with the
-  same stick size. When a `tl.dot`'s contraction axis is stick-tiled, the pass
-  windows *each* operand per stick and pairs the slices; it has no physical
-  coordinate map for an unmarked operand, so the per-stick slice of the marked
-  side no longer matches. Marking only one side is rejected with a diagnostic.
+- **Both operands of a *multi-stick* stickified contraction axis must be marked**,
+  with the same stick size. The check fires only when the annotated operand's
+  reduction axis actually spans more than one stick; the diagnostic is
+  `operands share a stickified contraction axis but not all are annotated — any
+  two operands sharing a stickified contraction axis must both carry a
+  tt.spyre_tensor_layout marker with the same stick size on that axis`. If the
+  shared contraction axis is single-stick or unstickified, an **unmarked logical
+  scratchpad operand is legal** — that is exactly the attention `P·V` case
+  (`@attn_pv`: "P is unannotated (a logical scratchpad), which is legal here
+  because the shared contraction axis (K) is not stickified").
 - **Logical intermediates stay unmarked.** A value produced inside the kernel
   (a softmax result `P` feeding `P·V`, or the `bc` scratchpad in upstream's
   `chained_matmul_kernel` — "the only logical intermediate (pure register value,
@@ -174,6 +194,25 @@ canonical form for the consuming op. Rules:
   (`arith.addf` type mismatch). Leave it logical.
 - Marking an operand whose parallel dim is single-stick while leaving the other
   operands unmarked is legitimate (see the multistick tests, which mark only `A`).
+
+### The real elementwise rule: all operands of an elementwise op must agree
+
+`retypeChain` walks forward along **operand 0 only**. So when a marked tensor
+feeds an elementwise op, any *sibling* operand whose producer the walk never
+reaches keeps its logical rank and the op fails to verify. The rule that actually
+holds is: **every operand of an elementwise op must physicalize identically.**
+
+- ✅ `vector_add__2d_spyre_stick` marks **all three** of `x`/`y`/`out` stick-on-N;
+  the add stays pure elementwise on rank-3 tiles.
+- ❌ A reduce-then-broadcast against a marked tensor breaks — this is why
+  **`softmax/` has no layout variant at all**. Upstream records it: the loaded row
+  physicalizes to rank 3 but "the broadcast of `row_max` stays rank 2, so
+  `row - row_max` fails with `'arith.subf' op requires the same type for all
+  operands and results`".
+
+Treat a softmax-shaped pattern (a reduction whose broadcast result feeds an
+elementwise op against a marked tensor) as a **known compiler blocker**, not an
+authoring mistake.
 
 ## Not only `tl.dot` — `tl.reduce` too
 
@@ -220,7 +259,7 @@ Marking the **output** descriptor triggers the store **sink stage** — the logi
 result is scattered into the physical stick buffer via `tensor.insert_slice`.
 Leave the output unmarked and the store stays logical (sink is a no-op).
 
-## Dynamic descriptor extent — a runtime size in `shape`
+## Dynamic descriptor extent and strides
 
 An extent may be a runtime `i32` arg rather than a `constexpr`, so one lowered
 kernel serves any size along that axis (e.g. per-request sequence length):
@@ -232,33 +271,62 @@ q_desc = tl.make_tensor_descriptor(
 )
 ```
 
-The runtime axis lowers to a `?` (kDynamic) memref dim. **`strides` and
-`block_shape` must stay compile-time constant** — only full extents may be
-dynamic. A loop bounded by the runtime size lowers to an `scf.for` with a runtime
-trip count.
+The runtime axis lowers to a `?` (kDynamic) memref dim; a floordiv dim over it
+becomes an `arith.ceildivsi`. A loop bounded by the runtime size lowers to an
+`scf.for` with a runtime trip count.
 
-## Inline-only constraint
+- **`block_shape` must be compile-time constant.** The coord map is applied to the
+  *block* shape and must yield all-static extents, else:
+  `spyre_tensor_layout: cannot derive static block_shape`.
+- **`strides` may be dynamic.** A runtime `i64` stride works in both modes —
+  device mode emits a `muli` chain, host mode passes it through
+  (`@dynamic_strides_device` in `rewrite-descriptor-layout-advanced.mlir`).
 
-The layout list must be an **inline literal** at the call site. Binding it to a
-plain local makes the `@triton.jit` code generator try to tensor-convert the
-keyword strings → `CompilationError`:
+## Pass the layout as a `tl.constexpr` arg — NOT an inline literal
 
-```python
-lay = [(0, "floordiv", 64), 1, (0, "mod", 64)]
-tl.spyre_tensor_layout(a_desc, lay)                                   # ❌ raises
-tl.spyre_tensor_layout(a_desc, [(0,"floordiv",64), 1, (0,"mod",64)])  # ✅ inline
-```
-
-Passing the layout as a **`tl.constexpr` kernel argument** is also fine (a
-constexpr is not a runtime local) — this is how upstream fixtures parametrize
-`A_LAYOUT`/`B_LAYOUT`/`C_LAYOUT`, applying them with:
+**A layout containing stick-split entries must arrive as a `tl.constexpr` kernel
+argument.** An inline literal at the call site raises. This is the most likely
+thing to break a first attempt, and it is the opposite of what older notes said.
 
 ```python
-if A_LAYOUT is not None:
-    tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+@triton.jit
+def k(..., A_LAYOUT: tl.constexpr):
+    a_desc = tl.make_tensor_descriptor(...)
+    if A_LAYOUT is not None:                    # ✅ the working form
+        tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+```
+```python
+    # ❌ inline literal -> TypeError: int() argument must be ... not 'tuple'
+    tl.spyre_tensor_layout(a_desc, [(0,"floordiv",64), 1, (0,"mod",64)])
+    # ❌ bound to a local -> CompilationError: cannot convert floordiv of
+    #    type <class 'str'> to tensor   (visit_Assign tries to_tensor on the str)
+    lay = [(0,"floordiv",64), 1, (0,"mod",64)]
+    tl.spyre_tensor_layout(a_desc, lay)
 ```
 
-(Older notes used `if A_LAYOUT != 0:`; upstream now uses `is not None`.)
+Why: `Semantic._parse_coord_entry` gates on `isinstance(entry, (tuple, list))`
+using the **Python builtins** (`semantic.py` does `from . import core as tl` and
+never shadows those names). But the JIT frontend's `visit_List` / `visit_Tuple`
+both return `language.tuple(...)`, and `core.tuple(base_value)` is *not* a
+subclass of the builtin. So a nested entry from an inline literal fails the
+isinstance test, falls through to the bare-int branch, and `int()` raises on it.
+A `constexpr` arg is never walked by the frontend, so it stays a plain Python
+list of plain tuples and parses correctly.
+
+A layout of **only bare ints** (all-identity, no stick split) does survive an
+inline literal — the entries are `constexpr` scalars, not tuples — but there is no
+reason to rely on that; use the constexpr-arg form uniformly.
+
+Host side, build the value with the `sticksize` helper:
+
+```python
+_SS = functools.partial(sticksize, _SIG_SPYRE)
+"A_LAYOUT": [(1, "floordiv", _SS("a_ptr")), 0, (1, "mod", _SS("a_ptr"))]
+```
+
+Two additive entry spellings also work: `(src, "identity")` (a 2-tuple,
+equivalent to a bare int) and the raw op code `0`/`1`/`2` in place of the keyword
+string.
 
 ## The op has a verifier — malformed markers are diagnosed
 
@@ -276,6 +344,27 @@ A bad marker used to crash the pass; it now produces a diagnostic
 
 So a repeated logical dim is legal **only** as exactly one `floordiv` + one `mod`
 pair — never two identities, two floordivs, or a three-way split.
+
+## ⚠ A marked kernel that compiles is not thereby correct
+
+The pass has **no diagnostic for a consumer it cannot physicalize**. (The fix is
+`torch-spyre/triton` PR #95, *still open* as of pin `0ddc67b8` — verified absent
+from main.) When Phase 2 has no pattern for an op, that op is left holding a
+physical-rank operand against a logical-rank signature and **the pass still
+reports success**. You then either hit a downstream verifier error that never
+mentions layouts, or silently compute wrong numbers.
+
+A `linalg.generic` hand-written as a matmul is the classic trap: it declares no
+`ContractionOpInterface`, so `isContractionOp` (a *declaration* test on current
+main) misses it, and it falls through the elementwise retype path where its result
+type gets overwritten with operand 0's shape.
+
+So **never treat "it lowered" as verification.** Always pair a marked kernel with:
+
+1. structural assertions on the generated KTIR — no surviving
+   `tt.spyre_tensor_layout`, the expected `linalg.matmul` / `linalg.batch_matmul`
+   present; and
+2. a numerical run on ktir-cpu against a reference.
 
 ## Post-conditions worth asserting in a test
 
@@ -295,10 +384,17 @@ pair — never two identities, two floordivs, or a three-way split.
 `SpyreOptions` (`third_party/spyre/backend/compiler.py`) carries two fields that
 change marked-kernel output:
 
-- **`data_layout`** — `"device"` (stickified row-major physical strides) or
-  `"host"` (strides derived from logical strides via the coordinate map).
-  Default is **`"device"`**, but every upstream `spyre_stick_*` fixture sets
-  **`"host"`**. Anything other than these two values raises.
+- **`data_layout`** — `"device"` (row-major strides over the *physical* shape) or
+  `"host"` (physical strides derived from the *logical* strides through the coord
+  map). Default is **`"device"`**, but **every upstream layout fixture sets
+  `"host"`** — that is what makes a host-side row-major NumPy buffer match, i.e.
+  what makes numerical ktir-cpu execution come out right. For a kernel validated
+  against a NumPy reference, **`"host"` is almost certainly what you want.**
+  Anything other than the two values raises. Worked example of the difference, for
+  `[128,128]` stick-on-N with `S=64` → physical `[2,128,64]` and logical strides
+  `[128,1]`: host gives strides `[64, 128, 1]`, device gives `[8192, 64, 1]`
+  (`rewrite-descriptor-layout-advanced.mlir`). Via `spyre-triton-opt` the flag
+  spelling is `--rewrite-descriptor-layout=data-layout=host`.
 - **`required_fixes`** — optional correctness patches spliced into the TTIR→KTIR
   pipeline as `{fix pass: core pass it runs after}`, e.g.
   `{"convert_elementwise_to_linalg": "lower_compute_ops"}`. The anchor must be
@@ -306,6 +402,14 @@ change marked-kernel output:
   `lower_compute_ops`, `rewrite_descriptor_layout`, `lower_inter_tile`,
   `convert_functions`). **A bad anchor is silently ignored and the fix never
   runs** — a missing pass *binding* raises, a bad *anchor* does not.
+
+  Current fix passes: `convert_elementwise_to_linalg` (was core, now opt-in — 
+  anchor `lower_compute_ops`), `unalias_linalg_outs`, `drop_reduction_init_fill`
+  (anchor `lower_compute_ops`), `materialize_base_addresses` (anchor
+  `convert_functions`; its `base_addresses` are **element indices, not bytes**).
+  Caveat: `unalias_linalg_outs` is documented as needing anchor
+  `convert_elementwise_to_linalg`, which is *not* a core pass — and the composition
+  loop only honours core-pass anchors. Verify empirically before relying on it.
 
 > **This repo's gap:** `scripts/_spyre/round_trip.py`'s `make_ktir_mod` forwards
 > only `grid`. Neither `data_layout` nor `required_fixes` is plumbed through, so a

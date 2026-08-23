@@ -17,6 +17,7 @@ def matmul_kernel_spyre(
     a_ptr, b_ptr, c_ptr,
     M, K, N,
     BLOCK_M: tl.constexpr, BLOCK_K: tl.constexpr, BLOCK_N: tl.constexpr,
+    A_LAYOUT: tl.constexpr, B_LAYOUT: tl.constexpr, C_LAYOUT: tl.constexpr,
 ):
     pid = tl.program_id(0)
     num_cores = tl.num_programs(0)
@@ -31,13 +32,19 @@ def matmul_kernel_spyre(
         c_ptr, shape=[M, N], strides=[N, 1], block_shape=[BLOCK_M, BLOCK_N],
     )
     # Physical stick layout via markers. Descriptors stay logical; tl.dot is
-    # unchanged; no reshape glue. Convention (stick-on-X -> phys [X//S, other, X%S]):
-    #   marker = [(X_logical, "floordiv", S), other_logical, (X_logical, "mod", S)]
+    # unchanged; no reshape glue. The layouts arrive as constexpr ARGS — an
+    # inline literal with stick-split entries raises, so build them on the host
+    # (see lower.py) as e.g. A: [(0,"floordiv",S), 1, (0,"mod",S)] for stick-on-M,
+    # B/C: [(1,"floordiv",S), 0, (1,"mod",S)] for stick-on-N.
     # S = 128 // dtype_bytes (64 for fp16/bf16); src is the *logical* dim index.
     # Every stickified extent must be a multiple of S — M and N here.
-    tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # A[M,K] stick-on-M
-    tl.spyre_tensor_layout(b_desc, [(1, "floordiv", 64), 0, (1, "mod", 64)])  # B[K,N] stick-on-N
-    tl.spyre_tensor_layout(c_desc, [(1, "floordiv", 64), 0, (1, "mod", 64)])  # C[M,N] stick-on-N (drives store sink)
+    # The `is not None` guard lets one kernel serve marked and logical variants.
+    if A_LAYOUT is not None:
+        tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+    if B_LAYOUT is not None:
+        tl.spyre_tensor_layout(b_desc, B_LAYOUT)
+    if C_LAYOUT is not None:                 # marking C drives the store sink
+        tl.spyre_tensor_layout(c_desc, C_LAYOUT)
 
     m_blocks = tl.cdiv(M, BLOCK_M)
     n_blocks = tl.cdiv(N, BLOCK_N)
@@ -62,11 +69,14 @@ Key decisions:
 - Strides assume row-major contiguous layout (`[K, 1]` for A, `[N, 1]` for B).
 - Accumulator is f32 (numerical stability for the K reduction).
 - **Layout markers** declare the stick tiling: `stick-on-X -> [(X,"floordiv",S),
-  other, (X,"mod",S)]`, `S = 128//dtype_bytes`, inline literal (or a `constexpr`
-  arg). Which loop structure results is a *consequence* of the axes you mark —
-  stick-tiling a parallel axis gives a scatter loop over its sticks, stick-tiling
-  the contraction axis gives a K-reduction loop. Marking the output descriptor is
-  what drives the store sink.
+  other, (X,"mod",S)]`, `S = 128//dtype_bytes`, delivered as a **`constexpr` arg**
+  (not an inline literal). Which loop structure results is a *consequence* of the
+  axes you mark — stick-tiling a parallel axis gives a scatter loop over its
+  sticks, stick-tiling the contraction axis gives a K-reduction loop. Marking the
+  output descriptor is what drives the store sink.
+- Lowering this for numerical validation wants `data_layout="host"` (every
+  upstream layout fixture sets it); the `"device"` default assumes physical
+  row-major strides and will not match a host row-major buffer.
 - The `m`/`n` loops above are in **block units**; if a loop IV feeds a marked
   descriptor's stick dim the pass rescales its bounds *and step* to stick units
   for you — do not pre-multiply. See
