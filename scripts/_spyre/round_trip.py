@@ -16,10 +16,14 @@ the ~3 helpers we actually use lets the spyre backend come from an ordinary
 Upstream origin
 ---------------
   repo: https://github.com/torch-spyre/triton
-  rev:  5b467467  (3.7.0+git5b467467)
+  rev:  0ddc67b8  (3.7.0+git0ddc67b8)
   files: third_party/spyre/scripts/dump_round_trip.py  (--driver path only)
          third_party/spyre/test/utils.py                (compile_to_ttir, make_ktir_mod)
          third_party/spyre/scripts/_patterns/__init__.py (clean_ir)
+
+This rev is the same one ``SPYRE_TRITON`` pins in ``.github/workflows/ci.yaml``
+and ``README.md``, and it is COUPLED to the ``ktir-cpu`` rev in
+``pyproject.toml`` — see the README note ("The two pins move together").
 
 The one substantive change from upstream is the SpyreBackend import: upstream
 relies on ``third_party/spyre/`` being on ``sys.path`` so ``from backend.compiler
@@ -27,6 +31,13 @@ import SpyreBackend`` resolves against the source tree. A packaged install
 exposes the same class at ``triton.backends.spyre.compiler``, which is what we
 import here. Keep this file in sync when the upstream lowering API changes;
 ``scripts/gen_ktir.py --check`` is the drift guard for the *output*.
+
+Known divergence from upstream: ``make_ktir_mod`` forwards only ``grid`` to
+``SpyreOptions``. Upstream also has ``data_layout`` (default ``"device"``;
+every ``spyre_stick_*`` fixture sets ``"host"``) and ``required_fixes``, which a
+kernel carrying ``tl.spyre_tensor_layout`` markers may need — see
+``.agents/skills/_shared/spyre/tensor-layout-marker.md``. Plumb them through
+here when the first marked kernel lands.
 
 Usage (driven by gen_ktir.py; not meant to be run by hand)::
 
