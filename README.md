@@ -97,7 +97,7 @@ minutes; needs a GitHub token for the LLVM fetch) and runs in a separate
 ephemeral env, leaving `.venv` on stock PyPI Triton:
 
 ```bash
-SPYRE_TRITON="triton @ git+https://github.com/torch-spyre/triton@5b467467c883c53ec7a8a89f9e89cfd55241034b"
+SPYRE_TRITON="triton @ git+https://github.com/torch-spyre/triton@0ddc67b84037314c798ceaded1ddb3d8b2e51c87"
 
 # Regenerate every variant of every kernel with a lower.py driver:
 GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py
@@ -109,3 +109,15 @@ GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.p
 # CI drift guard — fail if any committed <variant>.ktir is stale:
 GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.py --check
 ```
+
+> **The two pins move together.** This spyre-Triton sha and the `ktir-cpu` rev in
+> `pyproject.toml` both consume `ktir-mlir-frontend`, and their frontend shas must
+> agree — `torch-spyre/triton@0ddc67b8`'s submodule and
+> `torch-spyre/ktir-cpu@9e03d63e`'s `mlir-frontend` extra both point at
+> `ktir-mlir-frontend@ecfb9ed7`. The accepted memory-space syntax is
+> `#ktdp.memory_space<global|ct_local>`, so update both pins together and then run
+> the T2 tests.
+
+There is no committed `uv.lock`: `pyproject.toml` plus the `SPYRE_TRITON` pin in
+`.github/workflows/ci.yaml` are the dependency sources of truth. `uv sync`
+resolves the environment.

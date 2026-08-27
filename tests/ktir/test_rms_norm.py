@@ -2,19 +2,21 @@
 """Validate the generated RMSNorm KTIR against a NumPy reference.
 
 The KTIR under test is *generated* from the Triton kernel source by
-``scripts/gen_ktir.py`` (driver: ``kernels/rms_norm/lower.py``), so the
+``scripts/gen_ktir.py`` (driver: ``kernels/vllm/rms_norm/lower.py``), so the
 function name and signature mirror the lowered kernel exactly:
 
     func.func @_rms_norm_kernel_td(
-        %arg0: index,  // input_ptr          [n_rows, n_cols] f16
-        %arg1: index,  // weight_ptr         [1, n_cols]      f16
-        %arg2: index,  // output_ptr         [n_rows, n_cols] f16
-        %arg3: i32,    // n_rows
-        %arg4: i32,    // n_cols
-        %arg5: i32,    // input_row_stride
-        %arg6: i32,    // output_row_stride
-        %arg7: f16,    // eps
+        %input_ptr: index,         // [n_rows, n_cols] f16
+        %weight_ptr: index,        // [1, n_cols]      f16
+        %output_ptr: index,        // [n_rows, n_cols] f16
+        %n_rows: i32,
+        %n_cols: i32,
+        %input_row_stride: i32,
+        %output_row_stride: i32,
+        %eps: f16,
     )
+
+Args are passed to ``execute_function`` by these parameter names.
 
 ``BLOCK_SIZE`` and ``ROWS_PER_PROGRAM`` are constexprs baked into the
 KTIR (see lower.py), so they are not runtime args. The reference is a
@@ -64,16 +66,16 @@ def _run(X: np.ndarray, W: np.ndarray) -> np.ndarray:
     Y = np.zeros((NUM_ROWS, N_COLS), dtype=np.float16)
     outputs = interp.execute_function(
         FUNC,
-        arg0=X,                       # input  [n_rows, n_cols]
-        arg1=W.reshape(1, N_COLS),    # weight [1, n_cols]
-        arg2=Y,                       # output [n_rows, n_cols]
-        arg3=np.int32(NUM_ROWS),
-        arg4=np.int32(N_COLS),
-        arg5=np.int32(N_COLS),        # input_row_stride  (contiguous rows)
-        arg6=np.int32(N_COLS),        # output_row_stride (contiguous rows)
-        arg7=EPS,
+        input_ptr=X,                        # [n_rows, n_cols]
+        weight_ptr=W.reshape(1, N_COLS),    # [1, n_cols]
+        output_ptr=Y,                       # [n_rows, n_cols]
+        n_rows=np.int32(NUM_ROWS),
+        n_cols=np.int32(N_COLS),
+        input_row_stride=np.int32(N_COLS),   # contiguous rows
+        output_row_stride=np.int32(N_COLS),  # contiguous rows
+        eps=EPS,
     )
-    return outputs["arg2"]
+    return outputs["output_ptr"]
 
 
 @pytest.mark.ktir_cpu

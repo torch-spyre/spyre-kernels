@@ -1,6 +1,6 @@
 ---
 name: spyre-review
-description: "Review a Spyre-aware kernel (spyre.py) for compliance with the authoring invariants (see _shared/invariants/), scratchpad utilization, Spyre-compiler descriptor patterns, and correctness vs original. Use when asked to review/verify a Spyre kernel. For a plain descriptor-API review (no invariants), use td-review."
+description: "Review a Spyre-aware kernel (spyre.py) for compliance with the authoring invariants (see _shared/spyre/invariants/), scratchpad utilization, Spyre-compiler descriptor patterns, and correctness vs original. Use when asked to review/verify a Spyre kernel. For a plain descriptor-API review (no invariants), use td-review."
 ---
 
 # Spyre Kernel Review Skill
@@ -28,7 +28,7 @@ the report.
 
 ### Step 1 — Invariants
 
-Read [`../_shared/invariants/`](../_shared/invariants/) and check the kernel
+Read [`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) and check the kernel
 against **every** file in it. Do not work from a fixed list — the set may grow
 or shrink, so enumerate the directory each time. Each invariant file states its
 own rule, verification steps, and red flags; apply them as written and report
@@ -59,18 +59,77 @@ original's `other=`). Per `descriptor-rules.md` §4 a scalar descriptor must be
 resolved (last dim ≥ 16 bytes) or the kernel declared non-portable — a surviving
 scalar descriptor or stale gap annotation is a FAIL.
 
+### Step 2b — Physical layout markers
+
+For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
+[`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md)):
+
+- **Present** on each stick-tiled descriptor, placed right after
+  `make_tensor_descriptor` and before any `.load`/`.store`.
+- **Passed as a `tl.constexpr` arg**, guarded `if X_LAYOUT is not None:` — an
+  inline literal containing stick-split entries raises at compile time, and a
+  layout bound to a plain local raises too. A marker fed an inline
+  `[(0,"floordiv",S), …]` literal is a **FAIL**.
+- **Well-formed**: one entry per physical dim; `stick-on-X` form
+  `[(X,"floordiv",S), other, (X,"mod",S)]`; `src` indices in range for the
+  logical rank; a repeated logical dim appears **only** as exactly one `floordiv`
+  + one `mod` (two identities, two floordivs, or a three-way split are all
+  rejected by the op verifier).
+- **Stick divisor** `S = 128 // dtype_bytes` (64 fp16/bf16, 32 fp32, 128 fp8) —
+  a hard-coded `64` on a non-2-byte dtype is a FAIL.
+- **Stickified extents are multiples of `S`** — this one is a *silent* failure
+  (an out-of-bounds physical view, no diagnostic), so check it by hand rather
+  than trusting the compiler. A stick dim whose *block* extent is smaller than
+  `S` is rejected (`a stick dim cannot be sub-stick`).
+- **Axis matches intent**: the marked axis is the one actually stick-tiled.
+  Stick-tiling a parallel/output axis synthesizes a scatter loop over its sticks;
+  stick-tiling the contraction axis synthesizes a K-reduction loop.
+- **Operands of the tiled op only** are marked. Both sides of a *multi-stick*
+  stickified contraction axis must be marked with the same stick size; an
+  unmarked logical scratchpad is valid on a single-stick or unstickified shared
+  axis. Elementwise addends (a bias / additive mask) remain unmarked, and all
+  tensor operands of an elementwise op must physicalize identically.
+  Softmax-shaped reduce/broadcast chains against marked tensors are unsupported.
+- **A transposed operand SHOULD be marked.** The pass absorbs an operand-side
+  transpose (`retypeChain` reinterprets roles via `dimRoles` and erases it), so
+  marker + `tl.trans` is the correct way to write `Q·Kᵀ` — *not* a defect.
+  Chained transposes compose. A transpose *between the contraction and a marked
+  store* is preserved deliberately; do not flag it as redundant.
+- **Multi-stick parallel output is supported** (the pass tiles the accumulator
+  with an outer scatter loop), so a parallel dim spanning several sticks is fine.
+  But all marked operands must agree on which output axis is scattered —
+  `operands disagree on the parallel multi-stick scatter` is the diagnostic.
+- **Batched matmul**: rank-3 logical operands carry one batch/head axis, marked
+  as an **identity dim** (a bare `src` int), while only the inner matmul axis is
+  stick-tiled. Both operands agree on the batch extent. Multiple logical batch
+  axes are folded into one leading dim; physical rank may be higher.
+- **Enclosing loops in block units**: a loop whose IV feeds a marked stick dim is
+  rescaled by the pass (bounds *and* step). A kernel that pre-multiplies by the
+  stick count itself double-scales — FAIL.
+- **Gather**: the indirect (row) dim of a gather must not be stick-split
+  (`stick-splitting the indirect (gather) row dim is not supported`).
+- **Dynamic extent and strides**: runtime values are valid in `shape` and
+  `strides`; `block_shape` must remain compile-time constant. A runtime value in
+  `block_shape` is a FAIL.
+- **No marked value through `tl.inter_tile`.** Layout-marker and inter-tile paths
+  are separate variants. Their composition is unsupported because the
+  inter-tile identity remains logical-rank while the partial/result is
+  physical-rank; accepting such a kernel is a FAIL.
+- **Output descriptor** carries a marker when the store must scatter into sticks.
+- Because `RewriteDescriptorLayout` closes the layout gap, a *missing* marker
+  where one is needed is a **FAIL**, not a `# [gap]` (reconcile with Step 3 /
+  `gap-handling.md`).
+
 ### Step 3 — Spyre-compiler descriptor patterns
 
-The set of compiler descriptor gaps changes as the lowering evolves, so this
-step does not enumerate them — see
-[`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
-for the contract and the live sources (KB, `torch-spyre/triton` issues/docs)
-where the current gaps are tracked.
 
-What to verify is the **handling**, not a fixed list: every site that hits a
-compiler gap stays in clean descriptor-first form with a `# [gap]` annotation,
-**not** a baked-in raw-pointer workaround or invented layout. A workaround
-shipped in place of the clean form is the FAIL.
+Use [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
+for the annotation contract and consult the authoritative sources it lists for
+the supported surface.
+
+Verify the **handling**: every unsupported site stays in clean descriptor-first
+form with a `# [gap]` annotation, **not** a baked-in raw-pointer workaround or
+invented layout. A workaround shipped in place of the clean form is the FAIL.
 
 ### Step 4 — Removed GPU patterns
 
@@ -98,7 +157,7 @@ the kernel non-compliant.
 ## Spyre Compliance Review: <kernel_name>
 
 ### Invariants
-- <one line per invariant file in `_shared/invariants/`>: PASS/WARN/FAIL — <evidence, verdict>
+- <one line per invariant file in `_shared/spyre/invariants/`>: PASS/WARN/FAIL — <evidence, verdict>
 
 ### Scratchpad utilization
 **Status:** OK / WARN
@@ -107,6 +166,10 @@ the kernel non-compliant.
 
 ### Descriptor API usage
 **Status:** PASS / WARN / FAIL — <block_ptr, redundant masking, unresolved scalar descriptors>
+
+### Physical layout markers
+**Status:** PASS / WARN / FAIL / N/A — <presence, well-formedness, stick divisor,
+stick-multiple extents, marked set (operands only), batch/transpose handling>
 
 ### Spyre-compiler descriptor patterns
 **Status:** PASS / FAIL — <gaps in clean form + `# [gap]` annotation, or baked-in workaround>

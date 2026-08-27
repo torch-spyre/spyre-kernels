@@ -65,3 +65,7 @@ venv.bak/
 *.swo
 *~
 .claude/settings.local.json
+
+# uv lockfile — pyproject.toml pins (ktir-cpu rev, spyre-Triton sha in ci.yaml)
+# are the single source of truth; a committed lock drifted from them silently.
+uv.lock

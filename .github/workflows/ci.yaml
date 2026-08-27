@@ -22,10 +22,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # spyre-enabled Triton build used to lower kernels to KTIR. Pinned to the
-  # sha the committed *.ktir were generated with (README pin); @main currently
-  # breaks the make_tensor_descriptor lowering path (_unflatten_ir on None).
-  SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@5b467467c883c53ec7a8a89f9e89cfd55241034b"
+  # spyre-enabled Triton build used to lower kernels to KTIR. Pinned to the sha
+  # the committed *.ktir were generated with (same pin as README.md and
+  # scripts/_spyre/round_trip.py's `rev:` note).
+  #
+  # This pin is COUPLED to the ktir-cpu rev in pyproject.toml: both consume
+  # ktir-mlir-frontend, and the shas must agree or the KTIR this job generates
+  # will not parse in the job below. torch-spyre/triton@0ddc67b8's submodule and
+  # torch-spyre/ktir-cpu@9e03d63e's `mlir-frontend` extra both point at
+  # ktir-mlir-frontend@ecfb9ed7. The accepted memory-space syntax is
+  # #ktdp.memory_space<global|ct_local>, so update the two pins together.
+  SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@0ddc67b84037314c798ceaded1ddb3d8b2e51c87"
 
 jobs:
 # GPU tests - uncomment when we have a GPU worker available

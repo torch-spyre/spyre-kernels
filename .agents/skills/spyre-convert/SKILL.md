@@ -1,6 +1,6 @@
 ---
 name: spyre-convert
-description: "Convert a GPU-shaped Triton kernel into a full Spyre-aware kernel (spyre.py) — tensor descriptors plus the authoring invariants (see _shared/invariants/), scratchpad batching, and Spyre-compiler gap handling. Use when asked to make a kernel Spyre-aware or port to Spyre. For a plain raw->descriptor port with no invariants, use td-convert."
+description: "Convert a GPU-shaped Triton kernel into a full Spyre-aware kernel (spyre.py) — tensor descriptors plus the authoring invariants (see _shared/spyre/invariants/), scratchpad batching, and Spyre-compiler gap handling. Use when asked to make a kernel Spyre-aware or port to Spyre. For a plain raw->descriptor port with no invariants, use td-convert."
 ---
 
 # Spyre Kernel Conversion Skill
@@ -31,7 +31,7 @@ Run the KB consult in [`../_shared/preflight.md`](../_shared/preflight.md).
 ## The invariants
 
 Every Spyre-aware kernel must satisfy the invariants in
-[`../_shared/invariants/`](../_shared/invariants/) — one file each. **Read that
+[`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) — one file each. **Read that
 directory** and apply every file you find; the set may grow or shrink, so do not
 rely on a fixed list here.
 
@@ -43,7 +43,7 @@ rely on a fixed list here.
    minimum. (Same as `td-convert` step 1–3.)
 
 2. **Satisfy every invariant.** Read
-   [`../_shared/invariants/`](../_shared/invariants/) and apply each file's rule
+   [`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) and apply each file's rule
    and canonical pattern — do not work from a fixed list, as the set may change.
    Typical work this entails: replacing the unbounded GPU grid with a
    `tl.program_id` / `tl.num_programs` distribution loop, using fixed constexpr
@@ -72,19 +72,104 @@ rely on a fixed list here.
    `[BLOCK_ITEMS]` vector clears the minimum) and the divergent-control-flow
    masking trade-off.
 
-6. **Handle Spyre-compiler descriptor gaps the right way.** Write the cleanest
-   descriptor-first form even if it does not compile yet; if it hits a gap,
-   **mark the site with a `# [gap]` annotation** rather than baking a workaround
-   into the kernel. See [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
-   for the annotation contract and the live sources (KB, `torch-spyre/triton`
-   issues/docs) where the current gaps are tracked, so the target form is clear
-   once the compiler catches up.
+6. **Handle Spyre-compiler descriptor gaps explicitly.** Write the cleanest
+   descriptor-first form; if it is unsupported, **mark the site with a `# [gap]`
+   annotation** rather than baking a workaround into the kernel. See
+   [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md) for the
+   annotation contract and the live sources (KB, `torch-spyre/triton`
+   issues/docs) that define the supported surface.
 
-## Layout awareness (write logical; the compiler tiles physical)
+## Layout awareness (write logical; annotate the physical layout with a marker)
 
 Write descriptors in **logical** shape — the tensor's math dimensions — see the
-worked [`../_shared/examples/matmul-logical.md`](../_shared/examples/matmul-logical.md).
-You do **not** hand-write the physical device layout; the compiler derives it.
+worked [`../_shared/spyre/examples/matmul-logical.md`](../_shared/spyre/examples/matmul-logical.md).
+You do **not** hand-write the physical device layout in the shape/strides; the
+compiler tiles it.
+
+> When a tensor is stick-tiled, make the physical layout **explicit** with a
+> `tl.spyre_tensor_layout` marker on its descriptor. The descriptor stays
+> logical; the marker declares the stick factoring; the compiler's
+> `RewriteDescriptorLayout` pass synthesizes the physical loops. `tl.dot` is
+> untouched and there is **no** reshape glue (contrast the physical variant).
+
+Pass each layout as a `tl.constexpr` argument and apply it immediately after
+constructing the descriptor:
+
+```python
+@triton.jit
+def kernel(..., A_LAYOUT: tl.constexpr):
+    a_desc = tl.make_tensor_descriptor(
+        a_ptr, shape=[M, K], strides=[K, 1], block_shape=[BLOCK_M, BLOCK_K],
+    )
+    if A_LAYOUT is not None:
+        tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+
+# Host/lowering config: A_LAYOUT = [(0, "floordiv", S), 1, (0, "mod", S)]
+```
+
+- **One entry per physical dim**, in the order `[stick-index, other…, lane]`.
+  Convention: `stick-on-X` → `[(X, "floordiv", S), other, (X, "mod", S)]`. Bare
+  int = identity on that logical dim; `(src,"floordiv",S)` = stick index;
+  `(src,"mod",S)` = within-stick lane.
+- **`src` is the logical dim index** being stick-tiled (K for `A[M,K]` is dim 1;
+  K for `B[K,N]` is dim 0 — same-looking markers name different axes).
+- **`S = 128 // dtype_bytes`** (64 fp16/bf16, 32 fp32, 128 fp8) — not hard-coded.
+- **Stickified extents must be multiples of `S`.** A ragged split silently
+  produces an out-of-bounds physical view (not diagnosed) — pad on the host, and
+  say so in the conversion notes. A stick dim's *block* extent may not be
+  sub-stick either.
+- **Pass the layout as a `tl.constexpr` kernel arg — not an inline literal.** A
+  layout containing stick-split entries *raises* when written inline at the call
+  site (`TypeError: int() argument must be ... not 'tuple'`), because the jit
+  frontend turns the literal into a `core.tuple` that the parser's builtin-`tuple`
+  isinstance check rejects. Binding it to a plain local also fails (the jit tries
+  to tensor-convert the `"floordiv"` string). The working form:
+
+  ```python
+  def kern(..., A_LAYOUT: tl.constexpr):
+      if A_LAYOUT is not None:
+          tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+  ```
+- **Mark the output descriptor** too when the store must scatter into sticks.
+- **Mark the memory operands of the tiled op only.** Both sides of a
+  *multi-stick* stickified contraction axis must be marked with the same stick
+  size. A logical scratchpad on a single-stick or unstickified shared axis is
+  valid. Leave elementwise addends (a bias / additive mask) unmarked. All tensor
+  operands of an elementwise op must physicalize identically; softmax-shaped
+  reduce/broadcast chains against marked tensors are unsupported.
+- **A transposed operand gets marked.** Mark it and bring it in with
+  `tl.trans` — the pass absorbs the permutation (this is how you write `Q·Kᵀ`),
+  and chained transposes compose. A transpose *after* the contraction feeding a
+  marked store is preserved instead, so keep it if you need that output order.
+- **Markers are not matmul-only** — a marked input to a reduction gets the same
+  stick loop.
+- **Batched matmul: an identity batch dim.** A descriptor may carry one logical
+  batch axis (`[BATCH, M, K]`) — make it an identity dim (a bare `src` int) and
+  stick-tile only the inner matmul axis; rank-3 `tl.dot` lowers to
+  `linalg.batch_matmul`. Both operands must agree on the batch extent. Fold
+  multiple logical batch axes into one leading dimension on the host; physical
+  rank may be higher.
+- **Write enclosing loops in block units.** If a loop IV feeds a marked
+  descriptor's stick dim, the pass rescales the loop's bounds *and step* into
+  stick units — do not pre-multiply by the stick count yourself.
+- **Dynamic extent and strides.** Shape extents and strides may be runtime
+  values. `block_shape` must remain compile-time constant.
+- **Keep `tl.inter_tile` separate.** A marked value passed through
+  `tl.inter_tile` fails because the inter-tile identity tensor remains logical
+  while the partial/result becomes physical. Produce separate layout-marker and
+  inter-tile variants; a kernel requiring both on the same value is unsupported.
+
+Which loop structure results (a parallel scatter over an output axis's sticks vs a
+K-reduction loop) is a *consequence* of which axes you mark — the compiler assigns
+a role per physical dim and derives the loops. See
+[`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md)
+for the full coordinate-map reference, the verifier's diagnostics, and the
+`data_layout` / `required_fixes` lowering options.
+
+> **Dependency:** `tl.spyre_tensor_layout` requires the `torch-spyre/triton`
+> build (not stock PyPI Triton). KTIR generation is pinned to that build, and
+> that pin is coupled to the `ktir-cpu` rev — see
+> [`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md).
 
 ## Output file structure
 
@@ -144,7 +229,7 @@ Keep it short — the *why* behind non-obvious choices, not a line-by-line diff.
        worked around (see `gap-handling.md`)
 3. [ ] `@triton.autotune` removed, with the why understood (compiler-level
        tiling, not launch-timing search)
-4. [ ] Every invariant in `_shared/invariants/` satisfied (read the directory —
+4. [ ] Every invariant in `_shared/spyre/invariants/` satisfied (read the directory —
        do not assume a fixed set)
 5. [ ] Scratchpad utilization evaluated; batched where beneficial
 6. [ ] Output at `kernels/<name>/spyre.py`, kernel `_<name>_kernel_spyre`
