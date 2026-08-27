@@ -72,13 +72,12 @@ rely on a fixed list here.
    `[BLOCK_ITEMS]` vector clears the minimum) and the divergent-control-flow
    masking trade-off.
 
-6. **Handle Spyre-compiler descriptor gaps the right way.** Write the cleanest
-   descriptor-first form even if it does not compile yet; if it hits a gap,
-   **mark the site with a `# [gap]` annotation** rather than baking a workaround
-   into the kernel. See [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
-   for the annotation contract and the live sources (KB, `torch-spyre/triton`
-   issues/docs) where the current gaps are tracked, so the target form is clear
-   once the compiler catches up.
+6. **Handle Spyre-compiler descriptor gaps explicitly.** Write the cleanest
+   descriptor-first form; if it is unsupported, **mark the site with a `# [gap]`
+   annotation** rather than baking a workaround into the kernel. See
+   [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md) for the
+   annotation contract and the live sources (KB, `torch-spyre/triton`
+   issues/docs) that define the supported surface.
 
 ## Layout awareness (write logical; annotate the physical layout with a marker)
 
@@ -93,12 +92,19 @@ compiler tiles it.
 > `RewriteDescriptorLayout` pass synthesizes the physical loops. `tl.dot` is
 > untouched and there is **no** reshape glue (contrast the physical variant).
 
-For each stick-tiled descriptor, immediately after constructing it:
+Pass each layout as a `tl.constexpr` argument and apply it immediately after
+constructing the descriptor:
 
 ```python
-a_desc = tl.make_tensor_descriptor(a_ptr, shape=[M, K], strides=[K, 1],
-                                    block_shape=[BLOCK_M, BLOCK_K])
-tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # stick-on-M
+@triton.jit
+def kernel(..., A_LAYOUT: tl.constexpr):
+    a_desc = tl.make_tensor_descriptor(
+        a_ptr, shape=[M, K], strides=[K, 1], block_shape=[BLOCK_M, BLOCK_K],
+    )
+    if A_LAYOUT is not None:
+        tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+
+# Host/lowering config: A_LAYOUT = [(0, "floordiv", S), 1, (0, "mod", S)]
 ```
 
 - **One entry per physical dim**, in the order `[stick-index, other…, lane]`.
@@ -125,27 +131,33 @@ tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # stic
           tl.spyre_tensor_layout(a_desc, A_LAYOUT)
   ```
 - **Mark the output descriptor** too when the store must scatter into sticks.
-- **Mark the memory operands of the tiled op only.** Both sides of a stickified
-  contraction axis must be marked, with the same stick size. Leave logical
-  intermediates (a softmax result feeding the next `tl.dot`, a scratchpad) and
-  elementwise addends (a bias / additive mask) **unmarked**.
-- **A transposed operand still gets marked.** Mark it and bring it in with
+- **Mark the memory operands of the tiled op only.** Both sides of a
+  *multi-stick* stickified contraction axis must be marked with the same stick
+  size. A logical scratchpad on a single-stick or unstickified shared axis is
+  valid. Leave elementwise addends (a bias / additive mask) unmarked. All tensor
+  operands of an elementwise op must physicalize identically; softmax-shaped
+  reduce/broadcast chains against marked tensors are unsupported.
+- **A transposed operand gets marked.** Mark it and bring it in with
   `tl.trans` — the pass absorbs the permutation (this is how you write `Q·Kᵀ`),
   and chained transposes compose. A transpose *after* the contraction feeding a
   marked store is preserved instead, so keep it if you need that output order.
 - **Markers are not matmul-only** — a marked input to a reduction gets the same
   stick loop.
-- **Batched matmul: an identity batch dim.** A descriptor may carry a leading
+- **Batched matmul: an identity batch dim.** A descriptor may carry one logical
   batch axis (`[BATCH, M, K]`) — make it an identity dim (a bare `src` int) and
-  stick-tile only the inner matmul axis; `tl.dot` over the trailing two dims
-  lowers to `linalg.batch_matmul`, covering every batch/head in one launch. Only
-  one leading batch dim is dispatched; fold extras on the host.
+  stick-tile only the inner matmul axis; rank-3 `tl.dot` lowers to
+  `linalg.batch_matmul`. Both operands must agree on the batch extent. Fold
+  multiple logical batch axes into one leading dimension on the host; physical
+  rank may be higher.
 - **Write enclosing loops in block units.** If a loop IV feeds a marked
   descriptor's stick dim, the pass rescales the loop's bounds *and step* into
   stick units — do not pre-multiply by the stick count yourself.
-- **Dynamic extent.** An extent may be a runtime `i32` arg (put it in `shape`
-  only; `strides`/`block_shape` stay constexpr) so one lowered kernel serves any
-  size along that axis.
+- **Dynamic extent and strides.** Shape extents and strides may be runtime
+  values. `block_shape` must remain compile-time constant.
+- **Keep `tl.inter_tile` separate.** A marked value passed through
+  `tl.inter_tile` fails because the inter-tile identity tensor remains logical
+  while the partial/result becomes physical. Produce separate layout-marker and
+  inter-tile variants; a kernel requiring both on the same value is unsupported.
 
 Which loop structure results (a parallel scatter over an output axis's sticks vs a
 K-reduction loop) is a *consequence* of which axes you mark — the compiler assigns

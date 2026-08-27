@@ -50,11 +50,11 @@ canonical reference and includes IR-level assertion helpers (`assert_present`,
 > `td-test`. Use the ktir-cpu path here; use GPU there.
 
 Mark CPU-runnable tests with `@pytest.mark.ktir_cpu` (declared in
-`pyproject.toml`) so CI can select them. CI currently scopes collection to
-specific files because some `tests/ktir/` modules import a kernel's
-`original.py` at module scope, whose import-time autotune touches Triton's
-active driver and crashes on a CPU runner — avoid a module-scope `original.py`
-import in a new test, and add the file to the CI step's list.
+`pyproject.toml`) so CI can select them. CI collects specific files because some
+`tests/ktir/` modules import a kernel's `original.py` at module scope, whose
+import-time autotune touches Triton's active driver and crashes on a CPU runner.
+Avoid module-scope `original.py` imports, and add each CPU-safe file to the CI
+step's list.
 
 ## Running the kernel — load the `.ktir`, execute on ktir-cpu
 
@@ -66,15 +66,21 @@ from ktir_cpu import KTIRInterpreter
 
 interp = KTIRInterpreter()
 interp.load(str(MLIR_PATH))          # kernels/vllm/<name>/<variant>.ktir
-outputs = interp.execute_function(FUNC, arg0=q, arg1=k, ..., argN=stride)
-result = outputs["argK"]             # the output buffer, by its positional arg name
+outputs = interp.execute_function(
+    FUNC,
+    input_ptr=x,
+    output_ptr=y,
+    size=np.int32(size),
+    stride=np.int32(stride),
+)
+result = outputs["output_ptr"]
 ```
 
-- **Arg order is positional** and must match the KTIR signature — pointers first,
-  then any **runtime `i32` sizes** (a dynamic extent supplied at execution time),
-  then the i32 strides. Derive strides from each array's own physical shape so one
-  helper serves every variant (GQA, padded head-dim, folded batch just fall out of
-  the shapes the caller passes).
+- **Argument names and order must match the committed KTIR signature.** Pass
+  buffers and scalars using the emitted names. Pointers come first, followed by
+  runtime sizes and strides according to the source signature. Derive strides
+  from each array's physical shape so one helper serves every variant (GQA,
+  padded head-dim, and folded batch follow from the supplied shapes).
 - **Each lowering variant is its own `.ktir`.** Things frozen at lowering — the
   distribution grid (core count), constexpr tile sizes — produce a separate
   `VARIANTS` entry / `<variant>.ktir`. Runtime sizes do **not** need a variant.
@@ -133,19 +139,26 @@ structural checks that catch a silently-wrong lowering the numeric test might mi
   drives the store sink.
 - A **dynamic extent** lowered to a `?` (kDynamic) memref dim (`memref<…x?x…>`).
 
-Note these are assertions about *this repo's* generated KTIR. They matter more
-than usual because **the pass has no diagnostic for a consumer it cannot
-physicalize** (upstream PR #95, still open) — a marked kernel can lower cleanly
-and still be silently wrong, so "it generated KTIR" is never verification on its
-own. Structural checks plus a numerical run are the defense.
+These are assertions about *this repo's* generated KTIR. The pass has no
+diagnostic for a consumer it cannot physicalize (`torch-spyre/triton#95`), so a
+marked kernel can lower cleanly and still be incorrect. Structural checks plus a
+numerical run are required.
 
-Two lowering options behind the KTIR are also not yet plumbed through
-`round_trip.py` (it forwards only `grid`), so a marked kernel currently lowers
-with `data_layout="device"` and no fix passes. **`data_layout="host"` is what
-upstream layout fixtures use and what makes a host row-major NumPy buffer
-match** — if numbers are wrong in a way that looks like a stride/layout mismatch,
-that is the first thing to check. See
+`round_trip.py` forwards only `grid`; it does not expose `data_layout` or
+`required_fixes`. Marked kernels through this path therefore use
+`data_layout="device"` and no fix passes. Upstream numerical layout fixtures use
+`data_layout="host"`, which maps a host row-major buffer through the coordinate
+map. A variant that requires host interpretation or a fix pass is unsupported by
+this generator. See
 [`../_shared/spyre/tensor-layout-marker.md`](../_shared/spyre/tensor-layout-marker.md).
+
+### 3b. Inter-tile and layout variants are tested separately
+
+Do not combine `tl.inter_tile` and `tl.spyre_tensor_layout` on the same value.
+The marked partial/result becomes physical-rank while the inter-tile identity
+remains logical-rank, and lowering fails verification. For a kernel needing both
+capabilities, maintain separate variants and test each independently; the
+combined path is unsupported.
 
 ### 4. Runtime-size (dynamic extent) coverage
 

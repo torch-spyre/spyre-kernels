@@ -16,7 +16,11 @@ glue (contrast the physical-descriptor variant).
 ## Syntax
 
 ```python
-tl.spyre_tensor_layout(desc, [ <one entry per physical dim> ])
+@triton.jit
+def kernel(..., LAYOUT: tl.constexpr):
+    tl.spyre_tensor_layout(desc, LAYOUT)
+
+# Host/lowering config: LAYOUT = [<one entry per physical dim>]
 ```
 
 Entry forms (the OpSpec `device_coordinates` map):
@@ -88,11 +92,9 @@ spyre_tensor_layout: block extent of stick dim (32) is smaller than the
 stick size (64); a stick dim cannot be sub-stick
 ```
 
-## The dispatch model — roles per dim, not two fixed "cases"
+## Dispatch model
 
-Older notes framed this as a choice between "Case 1 parallel sticks" and
-"Case 2 split-K reduction". That is no longer the whole picture: the pass
-assigns a **role to every physical dim** and synthesizes loops from the
+The pass assigns a **role to every physical dim** and synthesizes loops from the
 collection of roles. From `Classify.h`:
 
 > Assign a role to each physical dim of an operand. `>= 0` : parallel dim, maps
@@ -113,14 +115,12 @@ The useful author-facing summary:
 
 You still do not pick the loop structure; it follows from which axes you mark.
 
-## Multi-stick parallel output — now supported
+## Multi-stick parallel output
 
-A marked operand whose **parallel** dim spans more than one stick works: the
-pass tiles the accumulator, wrapping the reduction in an outer scatter loop that
-`extract_slice`s the parallel slab and `insert_slice`s the result back
-(`rewrite-descriptor-layout-parallel-multistick.mlir`). Earlier fixtures noted
-"multi-output-stick scatter is not yet implemented" — that limitation is gone.
-Two consequences:
+A marked operand whose **parallel** dim spans more than one stick is supported:
+the pass tiles the accumulator, wrapping the reduction in an outer scatter loop
+that `extract_slice`s the parallel slab and `insert_slice`s the result back
+(`rewrite-descriptor-layout-parallel-multistick.mlir`). Two consequences:
 
 - An extent-1 parallel floor dim costs nothing: "the scatter loop inlines at
   trip <= 1", emitting exactly what the reduction-only path emits.
@@ -211,10 +211,33 @@ holds is: **every operand of an elementwise op must physicalize identically.**
   operands and results`".
 
 Treat a softmax-shaped pattern (a reduction whose broadcast result feeds an
-elementwise op against a marked tensor) as a **known compiler blocker**, not an
-authoring mistake.
+elementwise op against a marked tensor) as an **unsupported compiler pattern**,
+not an authoring mistake.
 
-## Not only `tl.dot` — `tl.reduce` too
+## `tl.inter_tile` and layout markers do not compose
+
+This limitation is tracked by
+[`torch-spyre/triton#87`](https://github.com/torch-spyre/triton/issues/87).
+Use `tl.inter_tile` and `tl.spyre_tensor_layout` in separate kernel variants.
+A marked value flowing through `tl.inter_tile` does not lower correctly:
+`RewriteDescriptorLayout` physicalizes the partial and the `tt.inter_tile`
+result, but the op's sibling `identities` operand stays at logical rank.
+`LowerInterTile` forwards that identity while deriving result types from the
+physicalized partial, and verification fails:
+
+```text
+'ktdp.inter_tile_reduce' op failed to verify that identity types must
+match result types
+```
+
+Therefore:
+
+- do not pass a marked/physicalized value to `tl.inter_tile`;
+- represent layout-marker and inter-tile implementations as separate variants;
+- lower and test each variant independently; and
+- classify a kernel requiring both operations on the same value as unsupported.
+
+## `tl.reduce` support
 
 Markers are not matmul-specific. A marked input to a reduction gets the same
 treatment: `A[64,128]` stick-on-N with `N=128, S=64` yields 2 N-sticks and the
@@ -229,18 +252,20 @@ independently. Make the batch axis an **identity dim** (a bare `src` int) so it
 passes through untouched, and stick-tile only the inner axis:
 
 ```python
-# A[BATCH, M, K] stick-on-K (contraction axis = logical dim 2); dim 0 is the batch
-tl.spyre_tensor_layout(a_desc, [(2, "floordiv", S), 0, 1, (2, "mod", S)])
+# Host/lowering config for A[BATCH, M, K] stick-on-K; dim 0 is the batch.
+A_LAYOUT = [(2, "floordiv", S), 0, 1, (2, "mod", S)]
+# Kernel body: tl.spyre_tensor_layout(a_desc, A_LAYOUT)
 ```
 
 `tl.dot` over the **trailing two dims** lowers to `linalg.batch_matmul`. The bare
 `0` keeps the batch axis out of the stick factoring.
 
-- The batch extents of two operands **need not match**: a grouped case (GQA,
-  where several query heads share a KV head) resolves head-sharing at the
-  descriptor **load index**, not at the matmul batch dim.
-- More than one leading batch dim is **not** dispatched — the pass carries one
-  batch dim. Fold extra batch axes into a single leading dim on the host.
+- Both operands must agree on every shared parallel extent, including batch.
+  The pass does not check this itself; a mismatch surfaces as a downstream
+  `linalg.batch_matmul` verifier error.
+- Only rank-3 logical dot operands are dispatched to `linalg.batch_matmul`.
+  Fold multiple logical batch axes into one leading dimension on the host.
+  Physical rank is independent and may be higher (rank-5 layouts are covered).
 
 ## Gather / scatter
 
@@ -285,8 +310,7 @@ becomes an `arith.ceildivsi`. A loop bounded by the runtime size lowers to an
 ## Pass the layout as a `tl.constexpr` arg — NOT an inline literal
 
 **A layout containing stick-split entries must arrive as a `tl.constexpr` kernel
-argument.** An inline literal at the call site raises. This is the most likely
-thing to break a first attempt, and it is the opposite of what older notes said.
+argument.** An inline literal at the call site raises.
 
 ```python
 @triton.jit
@@ -330,7 +354,7 @@ string.
 
 ## The op has a verifier — malformed markers are diagnosed
 
-A bad marker used to crash the pass; it now produces a diagnostic
+Malformed markers produce diagnostics
 (`test/Triton/spyre-tensor-layout-invalid.mlir`). Quotable messages:
 
 | Mistake | Diagnostic |
@@ -347,17 +371,16 @@ pair — never two identities, two floordivs, or a three-way split.
 
 ## ⚠ A marked kernel that compiles is not thereby correct
 
-The pass has **no diagnostic for a consumer it cannot physicalize**. (The fix is
-`torch-spyre/triton` PR #95, *still open* as of pin `0ddc67b8` — verified absent
-from main.) When Phase 2 has no pattern for an op, that op is left holding a
-physical-rank operand against a logical-rank signature and **the pass still
-reports success**. You then either hit a downstream verifier error that never
-mentions layouts, or silently compute wrong numbers.
+The pass has **no diagnostic for a consumer it cannot physicalize** (tracked by
+`torch-spyre/triton#95`). When Phase 2 has no pattern for an op, that op is left
+holding a physical-rank operand against a logical-rank signature and **the pass
+still reports success**. This produces either a downstream verifier error that
+does not mention layouts or incorrect numerical output.
 
-A `linalg.generic` hand-written as a matmul is the classic trap: it declares no
-`ContractionOpInterface`, so `isContractionOp` (a *declaration* test on current
-main) misses it, and it falls through the elementwise retype path where its result
-type gets overwritten with operand 0's shape.
+A `linalg.generic` hand-written as a matmul is a representative trap: it declares
+no `ContractionOpInterface`, so `isContractionOp` misses it, and it falls through
+the elementwise retype path where its result type gets overwritten with operand
+0's shape.
 
 So **never treat "it lowered" as verification.** Always pair a marked kernel with:
 
@@ -403,18 +426,20 @@ change marked-kernel output:
   `convert_functions`). **A bad anchor is silently ignored and the fix never
   runs** — a missing pass *binding* raises, a bad *anchor* does not.
 
-  Current fix passes: `convert_elementwise_to_linalg` (was core, now opt-in — 
-  anchor `lower_compute_ops`), `unalias_linalg_outs`, `drop_reduction_init_fill`
-  (anchor `lower_compute_ops`), `materialize_base_addresses` (anchor
+  Available fix passes: `convert_elementwise_to_linalg` (anchor
+  `lower_compute_ops`), `unalias_linalg_outs`, `drop_reduction_init_fill`
+  (anchor `lower_compute_ops`), and `materialize_base_addresses` (anchor
   `convert_functions`; its `base_addresses` are **element indices, not bytes**).
-  Caveat: `unalias_linalg_outs` is documented as needing anchor
-  `convert_elementwise_to_linalg`, which is *not* a core pass — and the composition
-  loop only honours core-pass anchors. Verify empirically before relying on it.
+  `unalias_linalg_outs` is documented with anchor
+  `convert_elementwise_to_linalg`, which is not a core pass, while the composition
+  loop only honours core-pass anchors; do not rely on this pairing without an
+  explicit lowering test.
 
-> **This repo's gap:** `scripts/_spyre/round_trip.py`'s `make_ktir_mod` forwards
-> only `grid`. Neither `data_layout` nor `required_fixes` is plumbed through, so a
-> marked kernel lowered by `scripts/gen_ktir.py` gets `data_layout="device"` and
-> no fixes. Plumb them through `lower.py`'s `VARIANTS` before relying on them.
+> **This repo's lowering path:** `scripts/_spyre/round_trip.py`'s
+> `make_ktir_mod` forwards only `grid`. It does not accept `data_layout` or
+> `required_fixes`; marked kernels lowered through `scripts/gen_ktir.py` therefore
+> use `data_layout="device"` and no fix passes. Kernels requiring host-layout
+> interpretation or a fix pass are unsupported by this path.
 
 ## Known compiler gaps
 
@@ -428,14 +453,12 @@ change marked-kernel output:
 `tl.spyre_tensor_layout` exists only in the `torch-spyre/triton` build, not in
 stock PyPI Triton. This repo pins the spyre-Triton rev in
 `.github/workflows/ci.yaml` (`SPYRE_TRITON`), `README.md`, and
-`scripts/_spyre/round_trip.py` — currently `0ddc67b8`, which provides the
-builtin, the refactored `RewriteDescriptorLayout` (`Classify.cpp`,
-`ContractionSynthesis.cpp`, `PermutationUtils.h`), the op verifier, multi-stick
-parallel scatter, and loop rescaling. That pin is **coupled** to the `ktir-cpu`
-rev in `pyproject.toml` via `ktir-mlir-frontend` — see the README note. The base
-tier (`pyproject.toml` `triton>=3.7.0`, PyPI) is unchanged; markers only matter
-on the spyre lowering, so they are exercised via `gen_ktir.py` + the ktir-cpu
-tests, not on a GPU.
+`scripts/_spyre/round_trip.py` at `0ddc67b8`. This revision provides the builtin,
+`RewriteDescriptorLayout` (`Classify.cpp`, `ContractionSynthesis.cpp`,
+`PermutationUtils.h`), the op verifier, multi-stick parallel scatter, and loop
+rescaling. The pin is **coupled** to the `ktir-cpu` rev in `pyproject.toml` via
+`ktir-mlir-frontend` — see the README note. The base tier uses PyPI Triton and
+cannot compile the marker; marker tests use `gen_ktir.py` plus ktir-cpu.
 
 Source of truth: `torch-spyre/triton`
 `third_party/spyre/lib/Dialect/KTDP/Transforms/RewriteDescriptorLayout*`, the

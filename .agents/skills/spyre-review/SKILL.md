@@ -69,8 +69,7 @@ For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
 - **Passed as a `tl.constexpr` arg**, guarded `if X_LAYOUT is not None:` — an
   inline literal containing stick-split entries raises at compile time, and a
   layout bound to a plain local raises too. A marker fed an inline
-  `[(0,"floordiv",S), …]` literal is a **FAIL** (this is the reverse of the older
-  guidance; verify against the current reference).
+  `[(0,"floordiv",S), …]` literal is a **FAIL**.
 - **Well-formed**: one entry per physical dim; `stick-on-X` form
   `[(X,"floordiv",S), other, (X,"mod",S)]`; `src` indices in range for the
   logical rank; a repeated logical dim appears **only** as exactly one `floordiv`
@@ -85,11 +84,12 @@ For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
 - **Axis matches intent**: the marked axis is the one actually stick-tiled.
   Stick-tiling a parallel/output axis synthesizes a scatter loop over its sticks;
   stick-tiling the contraction axis synthesizes a K-reduction loop.
-- **Operands of the tiled op only** are marked. Both sides of a stickified
-  contraction axis must be marked with the same stick size (marking one side is
-  rejected). Logical intermediates (a softmax result, a scratchpad) and
-  elementwise addends (a bias / additive mask) must be **unmarked** — a marked
-  addend fails as an `arith.addf` type mismatch.
+- **Operands of the tiled op only** are marked. Both sides of a *multi-stick*
+  stickified contraction axis must be marked with the same stick size; an
+  unmarked logical scratchpad is valid on a single-stick or unstickified shared
+  axis. Elementwise addends (a bias / additive mask) remain unmarked, and all
+  tensor operands of an elementwise op must physicalize identically.
+  Softmax-shaped reduce/broadcast chains against marked tensors are unsupported.
 - **A transposed operand SHOULD be marked.** The pass absorbs an operand-side
   transpose (`retypeChain` reinterprets roles via `dimRoles` and erases it), so
   marker + `tl.trans` is the correct way to write `Q·Kᵀ` — *not* a defect.
@@ -99,18 +99,22 @@ For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
   with an outer scatter loop), so a parallel dim spanning several sticks is fine.
   But all marked operands must agree on which output axis is scattered —
   `operands disagree on the parallel multi-stick scatter` is the diagnostic.
-- **Batched matmul**: for an N-D descriptor whose leading axis is a batch/head
-  dim, that axis is an **identity dim** (a bare `src` int), and only the inner
-  matmul axis is stick-tiled — a stick entry on the batch axis is a FAIL. More
-  than one leading batch dim is not dispatched.
+- **Batched matmul**: rank-3 logical operands carry one batch/head axis, marked
+  as an **identity dim** (a bare `src` int), while only the inner matmul axis is
+  stick-tiled. Both operands agree on the batch extent. Multiple logical batch
+  axes are folded into one leading dim; physical rank may be higher.
 - **Enclosing loops in block units**: a loop whose IV feeds a marked stick dim is
   rescaled by the pass (bounds *and* step). A kernel that pre-multiplies by the
   stick count itself double-scales — FAIL.
 - **Gather**: the indirect (row) dim of a gather must not be stick-split
   (`stick-splitting the indirect (gather) row dim is not supported`).
-- **Dynamic extent**: a runtime-sized axis appears in `shape` only; `strides` and
-  `block_shape` for that descriptor stay compile-time constant — a runtime value
-  in `block_shape`/`strides` is a FAIL.
+- **Dynamic extent and strides**: runtime values are valid in `shape` and
+  `strides`; `block_shape` must remain compile-time constant. A runtime value in
+  `block_shape` is a FAIL.
+- **No marked value through `tl.inter_tile`.** Layout-marker and inter-tile paths
+  are separate variants. Their composition is unsupported because the
+  inter-tile identity remains logical-rank while the partial/result is
+  physical-rank; accepting such a kernel is a FAIL.
 - **Output descriptor** carries a marker when the store must scatter into sticks.
 - Because `RewriteDescriptorLayout` closes the layout gap, a *missing* marker
   where one is needed is a **FAIL**, not a `# [gap]` (reconcile with Step 3 /
@@ -119,16 +123,13 @@ For stick-tiled tensors, verify the `tl.spyre_tensor_layout` markers (see
 ### Step 3 — Spyre-compiler descriptor patterns
 
 
-The set of compiler descriptor gaps changes as the lowering evolves, so this
-step does not enumerate them — see
-[`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
-for the contract and the live sources (KB, `torch-spyre/triton` issues/docs)
-where the current gaps are tracked.
+Use [`../_shared/spyre/gap-handling.md`](../_shared/spyre/gap-handling.md)
+for the annotation contract and consult the authoritative sources it lists for
+the supported surface.
 
-What to verify is the **handling**, not a fixed list: every site that hits a
-compiler gap stays in clean descriptor-first form with a `# [gap]` annotation,
-**not** a baked-in raw-pointer workaround or invented layout. A workaround
-shipped in place of the clean form is the FAIL.
+Verify the **handling**: every unsupported site stays in clean descriptor-first
+form with a `# [gap]` annotation, **not** a baked-in raw-pointer workaround or
+invented layout. A workaround shipped in place of the clean form is the FAIL.
 
 ### Step 4 — Removed GPU patterns
 

@@ -9,9 +9,8 @@ fork's ``third_party/spyre/scripts/dump_round_trip.py`` (plus the
 Why vendored: ``scripts/gen_ktir.py`` needs the round-trip lowering entry
 point, but a packaged (non-editable) ``torch-spyre/triton`` install ships only
 ``python/triton/`` — it drops ``third_party/spyre/{scripts,test}``. Vendoring
-the ~3 helpers we actually use lets the spyre backend come from an ordinary
-(non-editable) install, so the repo no longer needs a hand-managed
-``external/triton`` checkout on the default path.
+the ~3 helpers we use lets the spyre backend come from an ordinary
+(non-editable) install without a hand-managed ``external/triton`` checkout.
 
 Upstream origin
 ---------------
@@ -25,19 +24,16 @@ This rev is the same one ``SPYRE_TRITON`` pins in ``.github/workflows/ci.yaml``
 and ``README.md``, and it is COUPLED to the ``ktir-cpu`` rev in
 ``pyproject.toml`` — see the README note ("The two pins move together").
 
-The one substantive change from upstream is the SpyreBackend import: upstream
-relies on ``third_party/spyre/`` being on ``sys.path`` so ``from backend.compiler
-import SpyreBackend`` resolves against the source tree. A packaged install
-exposes the same class at ``triton.backends.spyre.compiler``, which is what we
-import here. Keep this file in sync when the upstream lowering API changes;
-``scripts/gen_ktir.py --check`` is the drift guard for the *output*.
+This vendored module imports ``SpyreBackend`` from
+``triton.backends.spyre.compiler`` because a packaged installation exposes the
+backend there; the source-tree script resolves it through
+``third_party/spyre/``. ``scripts/gen_ktir.py --check`` verifies the generated
+output against the committed KTIR.
 
-Known divergence from upstream: ``make_ktir_mod`` forwards only ``grid`` to
-``SpyreOptions``. Upstream also has ``data_layout`` (default ``"device"``;
-every ``spyre_stick_*`` fixture sets ``"host"``) and ``required_fixes``, which a
-kernel carrying ``tl.spyre_tensor_layout`` markers may need — see
-``.agents/skills/_shared/spyre/tensor-layout-marker.md``. Plumb them through
-here when the first marked kernel lands.
+``make_ktir_mod`` forwards only ``grid`` to ``SpyreOptions``. It does not expose
+``data_layout`` or ``required_fixes``. Marked kernels that require host-layout
+interpretation or a fix pass are unsupported by this vendored lowering path; see
+``.agents/skills/_shared/spyre/tensor-layout-marker.md``.
 
 Usage (driven by gen_ktir.py; not meant to be run by hand)::
 
@@ -154,7 +150,7 @@ def make_ktir_mod(ttir_path, *, grid=None):
 
     ``grid`` is an optional per-axis hardware partition forwarded to the
     DistributeWork pass via SpyreOptions. Defaults to the backend's default
-    grid (currently ``(32,)``) when omitted.
+    grid (``(32,)``) when omitted.
     """
     from triton._C.libtriton import ir
     from triton.backends.compiler import GPUTarget

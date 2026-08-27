@@ -30,10 +30,8 @@ env:
   # ktir-mlir-frontend, and the shas must agree or the KTIR this job generates
   # will not parse in the job below. torch-spyre/triton@0ddc67b8's submodule and
   # torch-spyre/ktir-cpu@9e03d63e's `mlir-frontend` extra both point at
-  # ktir-mlir-frontend@ecfb9ed7. Frontend a3d6bd1 renamed
-  # #ktdp.spyre_memory_space<HBM|LX> -> #ktdp.memory_space<global|ct_local> and
-  # the old spelling is now *rejected* rather than defaulting to HBM, so bumping
-  # one of these two pins without the other breaks the round trip.
+  # ktir-mlir-frontend@ecfb9ed7. The accepted memory-space syntax is
+  # #ktdp.memory_space<global|ct_local>, so update the two pins together.
   SPYRE_TRITON: "triton @ git+https://github.com/torch-spyre/triton@0ddc67b84037314c798ceaded1ddb3d8b2e51c87"
 
 jobs:

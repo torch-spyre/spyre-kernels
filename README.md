@@ -114,12 +114,10 @@ GIT_PAT=$(gh auth token) uv run --with "$SPYRE_TRITON" python scripts/gen_ktir.p
 > `pyproject.toml` both consume `ktir-mlir-frontend`, and their frontend shas must
 > agree — `torch-spyre/triton@0ddc67b8`'s submodule and
 > `torch-spyre/ktir-cpu@9e03d63e`'s `mlir-frontend` extra both point at
-> `ktir-mlir-frontend@ecfb9ed7`. Frontend `a3d6bd1` renamed
-> `#ktdp.spyre_memory_space<HBM|LX>` to `#ktdp.memory_space<global|ct_local>` and
-> the old spelling is now *rejected* rather than silently defaulting to HBM, so
-> bumping one pin alone makes generated KTIR fail to parse on the simulator.
-> Update both, then re-run the T2 tests.
+> `ktir-mlir-frontend@ecfb9ed7`. The accepted memory-space syntax is
+> `#ktdp.memory_space<global|ct_local>`, so update both pins together and then run
+> the T2 tests.
 
-There is no committed `uv.lock`: `pyproject.toml` (plus the `SPYRE_TRITON` pin in
-`.github/workflows/ci.yaml`) is the single source of truth, and a checked-in lock
-drifted from it silently. `uv sync` resolves fresh.
+There is no committed `uv.lock`: `pyproject.toml` plus the `SPYRE_TRITON` pin in
+`.github/workflows/ci.yaml` are the dependency sources of truth. `uv sync`
+resolves the environment.

@@ -16,9 +16,7 @@ function name and signature mirror the lowered kernel exactly:
         %eps: f16,
     )
 
-Args are passed to ``execute_function`` by these parameter names. (Before
-spyre-Triton 0ddc67b8 the lowering emitted positional ``%arg0``…``%arg7``
-instead; triton#96's ConvertFunctions rewrite preserves the real names.)
+Args are passed to ``execute_function`` by these parameter names.
 
 ``BLOCK_SIZE`` and ``ROWS_PER_PROGRAM`` are constexprs baked into the
 KTIR (see lower.py), so they are not runtime args. The reference is a

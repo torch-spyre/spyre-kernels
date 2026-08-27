@@ -156,7 +156,13 @@ element.)
 > `tl.dot` is unchanged and there is no reshape glue.
 
 ```python
-tl.spyre_tensor_layout(a_desc, [(0, "floordiv", 64), 1, (0, "mod", 64)])  # A[M,K] stick-on-M
+@triton.jit
+def kernel(..., A_LAYOUT: tl.constexpr):
+    a_desc = tl.make_tensor_descriptor(...)
+    if A_LAYOUT is not None:
+        tl.spyre_tensor_layout(a_desc, A_LAYOUT)
+
+# Host/lowering config: A_LAYOUT = [(0, "floordiv", S), 1, (0, "mod", S)]
 ```
 
 One entry per physical dim. A bare int is an identity dim;
@@ -184,6 +190,11 @@ Three rules that bite:
 Note the pass has **no diagnostic for a consumer it cannot physicalize**, so a
 marked kernel that lowers without error may still be silently wrong — always pair
 it with structural KTIR assertions and a numerical ktir-cpu run.
+
+`tl.inter_tile` and layout markers are separate paths: passing a marked value
+through `tl.inter_tile` leaves the identity tensor at logical rank while the
+partial/result is physical-rank, so lowering fails verification. Use separate
+variants and test each independently.
 
 Markers apply to reductions too, not just `tl.dot`. Full coordinate-map
 reference, the per-dim role/dispatch model, multi-stick scatter, loop rescaling,
