@@ -1,6 +1,6 @@
 ---
 name: spyre-review
-description: "Review a Spyre-aware kernel (spyre.py) for compliance with the authoring invariants (see _shared/invariants/), scratchpad utilization, Spyre-compiler descriptor patterns, and correctness vs original. Use when asked to review/verify a Spyre kernel. For a plain descriptor-API review (no invariants), use td-review."
+description: "Review a Spyre-aware kernel (spyre.py) for compliance with the authoring invariants (see _shared/spyre/invariants/), scratchpad utilization, Spyre-compiler descriptor patterns, and correctness vs original. Use when asked to review/verify a Spyre kernel. For a plain descriptor-API review (no invariants), use td-review."
 ---
 
 # Spyre Kernel Review Skill
@@ -28,7 +28,7 @@ the report.
 
 ### Step 1 — Invariants
 
-Read [`../_shared/invariants/`](../_shared/invariants/) and check the kernel
+Read [`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) and check the kernel
 against **every** file in it. Do not work from a fixed list — the set may grow
 or shrink, so enumerate the directory each time. Each invariant file states its
 own rule, verification steps, and red flags; apply them as written and report
@@ -157,7 +157,7 @@ the kernel non-compliant.
 ## Spyre Compliance Review: <kernel_name>
 
 ### Invariants
-- <one line per invariant file in `_shared/invariants/`>: PASS/WARN/FAIL — <evidence, verdict>
+- <one line per invariant file in `_shared/spyre/invariants/`>: PASS/WARN/FAIL — <evidence, verdict>
 
 ### Scratchpad utilization
 **Status:** OK / WARN

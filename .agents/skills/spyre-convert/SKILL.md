@@ -1,6 +1,6 @@
 ---
 name: spyre-convert
-description: "Convert a GPU-shaped Triton kernel into a full Spyre-aware kernel (spyre.py) — tensor descriptors plus the authoring invariants (see _shared/invariants/), scratchpad batching, and Spyre-compiler gap handling. Use when asked to make a kernel Spyre-aware or port to Spyre. For a plain raw->descriptor port with no invariants, use td-convert."
+description: "Convert a GPU-shaped Triton kernel into a full Spyre-aware kernel (spyre.py) — tensor descriptors plus the authoring invariants (see _shared/spyre/invariants/), scratchpad batching, and Spyre-compiler gap handling. Use when asked to make a kernel Spyre-aware or port to Spyre. For a plain raw->descriptor port with no invariants, use td-convert."
 ---
 
 # Spyre Kernel Conversion Skill
@@ -31,7 +31,7 @@ Run the KB consult in [`../_shared/preflight.md`](../_shared/preflight.md).
 ## The invariants
 
 Every Spyre-aware kernel must satisfy the invariants in
-[`../_shared/invariants/`](../_shared/invariants/) — one file each. **Read that
+[`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) — one file each. **Read that
 directory** and apply every file you find; the set may grow or shrink, so do not
 rely on a fixed list here.
 
@@ -43,7 +43,7 @@ rely on a fixed list here.
    minimum. (Same as `td-convert` step 1–3.)
 
 2. **Satisfy every invariant.** Read
-   [`../_shared/invariants/`](../_shared/invariants/) and apply each file's rule
+   [`../_shared/spyre/invariants/`](../_shared/spyre/invariants/) and apply each file's rule
    and canonical pattern — do not work from a fixed list, as the set may change.
    Typical work this entails: replacing the unbounded GPU grid with a
    `tl.program_id` / `tl.num_programs` distribution loop, using fixed constexpr
@@ -82,7 +82,7 @@ rely on a fixed list here.
 ## Layout awareness (write logical; annotate the physical layout with a marker)
 
 Write descriptors in **logical** shape — the tensor's math dimensions — see the
-worked [`../_shared/examples/matmul-logical.md`](../_shared/examples/matmul-logical.md).
+worked [`../_shared/spyre/examples/matmul-logical.md`](../_shared/spyre/examples/matmul-logical.md).
 You do **not** hand-write the physical device layout in the shape/strides; the
 compiler tiles it.
 
@@ -229,7 +229,7 @@ Keep it short — the *why* behind non-obvious choices, not a line-by-line diff.
        worked around (see `gap-handling.md`)
 3. [ ] `@triton.autotune` removed, with the why understood (compiler-level
        tiling, not launch-timing search)
-4. [ ] Every invariant in `_shared/invariants/` satisfied (read the directory —
+4. [ ] Every invariant in `_shared/spyre/invariants/` satisfied (read the directory —
        do not assume a fixed set)
 5. [ ] Scratchpad utilization evaluated; batched where beneficial
 6. [ ] Output at `kernels/<name>/spyre.py`, kernel `_<name>_kernel_spyre`

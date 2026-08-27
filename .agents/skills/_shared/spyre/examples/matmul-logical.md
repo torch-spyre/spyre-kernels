@@ -80,5 +80,5 @@ Key decisions:
 - The `m`/`n` loops above are in **block units**; if a loop IV feeds a marked
   descriptor's stick dim the pass rescales its bounds *and step* to stick units
   for you — do not pre-multiply. See
-  [`../spyre/tensor-layout-marker.md`](../spyre/tensor-layout-marker.md).
+  [`../tensor-layout-marker.md`](../tensor-layout-marker.md).
 - No activation logic (stripped for brevity; add back if the original has it).

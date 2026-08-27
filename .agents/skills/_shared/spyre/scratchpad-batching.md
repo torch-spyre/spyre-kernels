@@ -1,7 +1,7 @@
 # Scratchpad batching — use the rest of the 2 MB
 
 Once the hard constraint holds (tiles fit — see
-`../invariants/tile-fits-scratchpad.md`), check whether the kernel *under-uses*
+`invariants/tile-fits-scratchpad.md`), check whether the kernel *under-uses*
 the scratchpad by processing less data per iteration than it could. Low
 utilization leaves performance on the table: the scratchpad exists to hold
 working data, and using 1 KB of 2 MB underexploits the hardware.
